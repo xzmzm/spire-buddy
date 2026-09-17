@@ -1,0 +1,10 @@
+.DS_Store
+runs/
+.env
+.zcode/
+
+mod/**/bin/
+mod/**/obj/
+workshop/SpireBuddy/content/
+workshop/ModUploader/
+workshop/SpireBuddy/mod_id.txt

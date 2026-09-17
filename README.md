@@ -1,0 +1,76 @@
+# Spire Buddy for Slay the Spire 2
+
+Spire Buddy is a self-contained C# game mod with an in-game chat and settings
+panel. It reads the live game through an in-process adapter, sends requests
+directly to a configured OpenAI-compatible endpoint, validates every game action,
+and performs enemy decompilation in process. No companion service or browser
+dashboard is required.
+
+## Install
+
+Prerequisites are a working Slay the Spire 2 mod-loader installation and the
+.NET 9 SDK. The installer builds against the game's `sts2.dll` and
+`GodotSharp.dll`, then copies the mod assembly, ILSpy decompiler dependency,
+manifest, and third-party notices to the game's `mods` directory.
+
+On macOS, using the bundled arm64 game-data layout:
+
+```sh
+./scripts/install-mod.command
+./scripts/install-mod.command "/path/to/Slay the Spire 2"
+```
+
+On Linux, pass the game installation directory explicitly:
+
+```sh
+./scripts/install-mod.command "/path/to/Slay the Spire 2"
+```
+
+On Windows, use the PowerShell installer. With no game directory it searches
+the Steam libraries registered on the machine:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-mod.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install-mod.ps1 -Game "C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2"
+```
+
+Restart the game after installation, enable **Spire Buddy**, and configure the
+model in Settings. The installer leaves recoverable backups when replacing
+installed files and does not touch the mod's saved settings, panel layout, cache,
+or run traces.
+
+## Use Buddy
+
+The initial chat window includes examples for starting a run, winning the current
+fight, continuing a run, asking what to do next, checking potion odds, looking up
+enemy moves, choosing rewards, and comparing card, relic, path, or shop options.
+Questions do not start play by themselves. Say **continue this run** or
+**win this fight** to control play, and say **stop** to cancel play while keeping
+Buddy available for conversation.
+
+Buddy can answer questions about the current state, discovered cards, relics and potions,
+static enemy rules, recent actions, saved run statistics, and potion reward odds.
+It keeps one player-facing voice, preserves the chat conversation during the game
+process, and sends only changed public state on follow-up turns. Replies and
+gameplay commentary render as Markdown in the panel. The panel UI follows the
+game's language — Chinese when the game runs in Chinese, English otherwise —
+and **stop** (or **停**) cancels play.
+
+See [the mod guide](mod/README.md) for configuration, controls, safety,
+installation paths, and verification. The implementation overview is in
+[docs/architecture.md](docs/architecture.md).
+
+## Build and test
+
+The mod project needs the path to a game data directory containing `sts2.dll`
+and `GodotSharp.dll`:
+
+```sh
+dotnet build mod/SpireBuddy -c Release -p:STS2GameDataDir="/path/to/game/data"
+dotnet build mod/SpireBuddy.Tests -c Release
+dotnet run --project mod/SpireBuddy.Tests -c Release
+```
+
+The tests target `net9.0`; install the .NET 9 runtime to run them. The test
+project does not need Godot or the game assemblies unless you also run its
+optional real-decompilation check.
