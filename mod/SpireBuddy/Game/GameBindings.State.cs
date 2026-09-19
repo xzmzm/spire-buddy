@@ -412,6 +412,11 @@ internal static partial class GameBindings
             {
                 var hitbox = ancientLayout.GetNodeOrNull<NClickableControl>("%DialogueHitbox");
                 inDialogue = hitbox != null && hitbox.Visible && hitbox.IsEnabled;
+                // Intermediate lines keep the same enabled hitbox, event body
+                // and options. Include the displayed line's position so each
+                // successful advance changes the snapshot without tracking
+                // animation frames or exposing any upcoming dialogue.
+                state["dialogue_line"] = ancientLayout.Get(NAncientEventLayout.PropertyName._currentDialogueLine).AsInt32();
             }
         }
         state["in_dialogue"] = inDialogue;

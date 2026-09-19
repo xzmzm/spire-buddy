@@ -3,7 +3,7 @@
   "name": "Spire Buddy",
   "author": "xzmzm",
   "description": "Spire Buddy is an in-game AI companion for Slay the Spire 2, with controls, live commentary, and model settings.",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "has_pck": false,
   "has_dll": true,
   "affects_gameplay": true

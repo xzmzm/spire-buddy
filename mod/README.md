@@ -83,6 +83,8 @@ When no saved settings or environment overrides exist, the first-run defaults ar
 | API format | `responses` |
 | Personality | Witty streamer (`witty_streamer`) |
 | Max context tokens | `250000` |
+| Use Combat Solver to auto fight | Off |
+| Hide Combat Solver UI during combat | Off |
 
 If `STS2_BOT_BASE_URL` or `STS2_BOT_MODEL` is set, it seeds the
 corresponding first-run value. Replace the local endpoint and default model unless
@@ -113,6 +115,24 @@ directory and survives restarts. Treat that file as sensitive. The key field sho
 masked asterisks while a key is stored; type a new key to replace it, or leave the
 mask untouched to keep the stored key. Agent sessions and the visible chat feed
 are in memory for the current game process.
+
+### Combat Solver integration
+
+**Settings** offers two optional toggles for the [Combat Solver](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961)
+workshop mod (战斗路线求解器). Both grey out with an install hint while that mod
+is missing, and wake up once its assembly has loaded:
+
+- **Use Combat Solver to auto fight** — Buddy hands each combat to the solver's
+  full-auto mode instead of playing fights with its own combat model. The solver
+  is armed at every combat start and re-armed whenever it stops itself
+  mid-fight, so it auto-plays the whole combat; Buddy resumes on the next
+  non-combat screen. If the solver is unavailable, disabled in its own
+  settings, or refuses the take-over, Buddy falls back to playing the fight
+  itself and says so in the feed. Saying **stop** also disarms the solver.
+- **Hide Combat Solver UI during combat** — the solver's overlay normally
+  appears during combat; with this on, Buddy keeps it hidden for the whole
+  fight. The toggle acts whenever combat is in progress, whether or not Buddy
+  is playing.
 
 Talk to Buddy in the single chat composer. Questions do not start play by
 themselves. The initial chat window includes these examples:
@@ -266,7 +286,7 @@ dotnet run --project mod/SpireBuddy.Tests -c Release
 ```
 
 For just the compact card-sequence checks, append `-- --card-choices` to the run
-command.
+command. Use `-- --dialogue` for ancient dialogue continuation and settlement.
 
 The tests target `net9.0` and need the .NET 9 runtime. They need neither
 Godot nor Python. The suite exercises both model transports with fake HTTP

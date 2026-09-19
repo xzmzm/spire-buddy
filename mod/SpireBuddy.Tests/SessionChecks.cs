@@ -660,6 +660,8 @@ internal sealed class SessionHandler(string api) : HttpMessageHandler
     internal JsonNode State = Map();
     internal Func<JsonNode, CancellationToken, Task<JsonNode>>? Respond;
     internal Func<JsonNode, JsonNode>? AfterAction;
+    internal Func<string, JsonNode>? Solver;
+    internal List<string> SolverOps = [];
     internal List<JsonNode> Requests = [];
     internal int Commands, MaxBuddyCalls;
     internal string ActionMessage = "Playing.";
@@ -672,7 +674,11 @@ internal sealed class SessionHandler(string api) : HttpMessageHandler
         if (State.Text("state_type") == "monster") SawCombatOwner = agents["combat"] != null && agents["game"].Text("status") == "waiting_for_combat";
         State = AfterAction?.Invoke(command) ?? new JsonObject { ["state_type"] = "game_over" };
         return new JsonObject { ["status"] = "ok" };
-    }, (_, _, _, _, _) => new JsonObject(), () => new JsonObject { ["odds"] = new JsonObject { ["chance"] = "40%" } });
+    }, (_, _, _, _, _) => new JsonObject(), () => new JsonObject { ["odds"] = new JsonObject { ["chance"] = "40%" } }, op =>
+    {
+        SolverOps.Add(op);
+        return Solver == null ? new JsonObject { ["available"] = false } : Solver(op);
+    });
 
     internal static JsonNode Map() => JsonNode.Parse("""{"state_type":"map","map":{"next_options":[{"index":0},{"index":1}]},"player":{"hp":50,"gold":20,"potions":[]}}""")!;
     internal static JsonNode Combat() => JsonNode.Parse("""{"state_type":"monster","battle":{"round":1,"turn":"player"},"player":{"hp":50,"potions":[],"hand":[]}}""")!;

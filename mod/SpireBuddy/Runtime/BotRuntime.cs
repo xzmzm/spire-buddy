@@ -7,6 +7,11 @@ namespace SpireBuddy.Runtime;
 internal sealed class BotRuntime : IDisposable
 {
     static readonly TimeSpan ActionPreviewDelay = TimeSpan.FromMilliseconds(600);
+    // While a solver-driven fight is armed, full auto is re-enabled on this
+    // cadence until the solver accepts; consecutive take-over failures beyond
+    // this cap (tests lower it) give the fight back to the model combat agent.
+    static readonly TimeSpan SolverPollDelay = TimeSpan.FromMilliseconds(500);
+    internal static int SolverEnableFailureLimit = 40;
     // The settings panel displays this mask while a key is stored; a payload
     // carrying it means "keep the stored key", exactly like a blank field.
     internal const string MaskedKey = "********";
@@ -21,6 +26,7 @@ internal sealed class BotRuntime : IDisposable
     readonly List<JsonObject> exchanges = [];
     readonly AgentSession buddy = new("buddy");
     GameplayAgent? gameAgent, combatAgent;
+    volatile bool solverCombat;
     JsonNode? snapshot;
     Task? worker;
     Task chatQueue = Task.CompletedTask;
@@ -43,7 +49,7 @@ internal sealed class BotRuntime : IDisposable
         // Gameplay has its own cancellation source so Stop also cancels reasoning.
         http.Timeout = TimeSpan.FromMinutes(10); model = new ModelClient(http);
         this.game = game;
-        settings = new JsonObject { ["base_url"] = Environment.GetEnvironmentVariable("STS2_BOT_BASE_URL") ?? "http://localhost:8317/v1", ["model"] = Environment.GetEnvironmentVariable("STS2_BOT_MODEL") ?? "gpt-5.6-sol", ["api_type"] = "responses", ["personality"] = "witty_streamer", ["max_context_tokens"] = 250000 };
+        settings = new JsonObject { ["base_url"] = Environment.GetEnvironmentVariable("STS2_BOT_BASE_URL") ?? "http://localhost:8317/v1", ["model"] = Environment.GetEnvironmentVariable("STS2_BOT_MODEL") ?? "gpt-5.6-sol", ["api_type"] = "responses", ["personality"] = "witty_streamer", ["max_context_tokens"] = 250000, ["use_combat_solver"] = false, ["hide_combat_solver_ui"] = false };
         var path = Path.Combine(directory, "settings.json");
         if (File.Exists(path)) foreach (var p in JsonNode.Parse(File.ReadAllText(path))!.AsObject()) settings[p.Key] = p.Value?.DeepClone();
         settings["api_key"] ??= "";
@@ -107,7 +113,7 @@ internal sealed class BotRuntime : IDisposable
         {
             var key = p.Key == "api_endpoint" ? "base_url" : p.Key;
             if (key == "api_key" && (string.IsNullOrEmpty(p.Value?.ToString()) || p.Value?.ToString() == MaskedKey)) continue;
-            if (key is "base_url" or "model" or "api_type" or "personality" or "custom_personality" or "max_context_tokens" or "reasoning_effort" or "api_key") result[key] = p.Value?.DeepClone();
+            if (key is "base_url" or "model" or "api_type" or "personality" or "custom_personality" or "max_context_tokens" or "reasoning_effort" or "api_key" or "use_combat_solver" or "hide_combat_solver_ui") result[key] = p.Value?.DeepClone();
         }
         return result;
     }
@@ -193,13 +199,14 @@ internal sealed class BotRuntime : IDisposable
     {
         ["game"] = gameAgent == null ? null : new JsonObject { ["status"] = stop ? "stopping" : combatAgent == null ? "running" : "waiting_for_combat", ["session_id"] = gameAgent.Session.Id, ["instructions"] = gameAgent.Instructions, ["plan"] = gameAgent.Plan },
         ["combat"] = combatAgent == null ? null : new JsonObject { ["status"] = stop ? "stopping" : "running", ["session_id"] = combatAgent.Session.Id, ["instructions"] = combatAgent.Instructions, ["plan"] = combatAgent.Plan },
+        ["combat_solver"] = solverCombat,
         ["scope"] = scope,
         ["last_report"] = lastReport
     };
 
     JsonObject BuddyPlayStatus() => new()
     {
-        ["play_status"] = gameAgent == null ? "idle" : stop ? "stopping" : combatAgent == null ? "playing" : "in combat",
+        ["play_status"] = gameAgent == null ? "idle" : stop ? "stopping" : solverCombat ? "in combat (Combat Solver)" : combatAgent == null ? "playing" : "in combat",
         ["scope"] = scope,
         ["plan"] = combatAgent?.Plan ?? gameAgent?.Plan ?? "",
         ["latest_report"] = lastReport
@@ -232,22 +239,40 @@ internal sealed class BotRuntime : IDisposable
         if (tracePath == null) return;
         try { File.AppendAllText(tracePath, value.WriteString() + "\n"); } catch (IOException) { /* Tracing must not trigger a duplicate mutation. */ }
     }
-    async Task<JsonNode> Stable(CancellationToken ct, string? before = null, JsonNode? command = null)
+    internal async Task<JsonNode> Stable(CancellationToken ct, string? before = null, JsonNode? command = null, TimeSpan? idleWindow = null, TimeSpan? hardCap = null)
     {
-        string previous = ""; int same = 0; var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (DateTime.UtcNow < deadline)
+        // Long scene transitions (new-run embark, ancient-event intros, act
+        // changes) legitimately outlast a plain 30 s budget on slow loads, so
+        // the deadline restarts on every sign of progress: an in-progress
+        // transition marker, a stalled read, or a snapshot that keeps evolving
+        // (map travel, scene swaps). Only a screen frozen non-interactive for
+        // the whole window is treated as unsettled; the hard cap still catches
+        // a hung game.
+        string previous = ""; int same = 0;
+        var idle = idleWindow ?? TimeSpan.FromSeconds(30);
+        var deadline = DateTime.UtcNow.Add(idle);
+        var hardDeadline = DateTime.UtcNow.Add(hardCap ?? TimeSpan.FromMinutes(10));
+        while (DateTime.UtcNow < deadline && DateTime.UtcNow < hardDeadline)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
                 var state = await game.ReadState(ct);
                 if (state.Text("state_type") == "unsupported") throw new InvalidOperationException(state.Text("message"));
+                if (state.Flag("loading")) deadline = DateTime.UtcNow.Add(idle);
                 var fp = GameState.Fingerprint(state);
                 bool ready = GameState.Ready(state, command) && fp != before;
-                same = ready && fp == previous ? same + 1 : 0; previous = fp;
+                same = ready && fp == previous ? same + 1 : 0;
                 if (same >= 2) return state;
+                if (fp != previous) deadline = DateTime.UtcNow.Add(idle);
+                previous = fp;
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested) { }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            {
+                // Heavy loading can stall the game's main-thread reads; that
+                // stall is progress too, not a dead screen.
+                deadline = DateTime.UtcNow.Add(idle);
+            }
             await Task.Delay(250, ct);
         }
         throw new InvalidOperationException(L10n.T("Game did not settle. Stopped; no action was retried.", "游戏画面迟迟未稳定。已停止，未重试任何操作。"));
@@ -301,6 +326,7 @@ internal sealed class BotRuntime : IDisposable
             }
             int rejections = 0;
             bool merchantOpened = false;
+            bool solverMissing = false, solverRefusedCombat = false;
             for (int step = 0; step < 2000 && !stop; step++)
             {
                 if (stop) break;
@@ -311,6 +337,26 @@ internal sealed class BotRuntime : IDisposable
                 if (state.Text("state_type") is not ("shop" or "fake_merchant")) merchantOpened = false;
                 var automaticAction = GameState.ForcedAction(state, actions, merchantOpened);
                 bool automatic = automaticAction != null;
+                if (!combat) solverRefusedCombat = false;
+                if (combat && !solverMissing && !solverRefusedCombat && SolverWanted())
+                {
+                    var outcome = await SolverCombat(ct);
+                    if (outcome == SolverOutcome.Played)
+                    {
+                        lock (sync) gameAgent!.Inbox.Enqueue("The Combat Solver just finished the previous fight; continue the run from the current screen. Internal status note: tell the player your own next step, do not repeat this note.");
+                        state = await Stable(ct);
+                        continue;
+                    }
+                    // A missing solver cannot appear mid-run; a refusal (its own
+                    // disable switch or a rejected take-over) only bypasses this
+                    // fight, and the normal combat decision path takes over.
+                    if (outcome == SolverOutcome.Missing)
+                    {
+                        solverMissing = true;
+                        Emit("agent_message", L10n.T("The Combat Solver mod is not available, so I will play the combats myself.", "战斗路线求解器 mod 不可用，接下来的战斗由我自己来打。"));
+                    }
+                    else solverRefusedCombat = true;
+                }
                 lock (sync)
                 {
                     snapshot = GameState.Public(state); cfg = (JsonObject)settings.DeepClone();
@@ -542,6 +588,79 @@ internal sealed class BotRuntime : IDisposable
     }
 
     static bool InCombat(JsonNode state) => GameState.Combat(state) || state.Text("state_type") == "hand_select";
+
+    bool SolverWanted() { lock (sync) return settings.Flag("use_combat_solver"); }
+
+    // Delegates the current fight to the installed Combat Solver mod: arms its
+    // full-auto mode, keeps it armed for the whole fight, and returns only when
+    // the combat is over. The model is never consulted; the run agent resumes
+    // on the following screen.
+    async Task<SolverOutcome> SolverCombat(CancellationToken ct)
+    {
+        var status = await game.Solver("status", ct);
+        if (!status.Flag("available")) return SolverOutcome.Missing;
+        if (status.Flag("solver_disabled"))
+        {
+            Emit("agent_message", L10n.T("The Combat Solver is disabled in its own settings, so I will play this fight.", "战斗路线求解器在它自己的设置中被禁用了，这场战斗我来打。"));
+            return SolverOutcome.Refused;
+        }
+        lock (sync) solverCombat = true;
+        Trace(new JsonObject { ["event"] = "solver_combat_started" });
+        Emit("agent_message", L10n.T("Handing this fight to the Combat Solver; it plays the combat automatically.", "这场战斗交给战斗路线求解器，由它自动出牌。"));
+        try
+        {
+            // Full auto can drop mid-fight (the solver stops on worse
+            // recalculations or its configured death-turn stop); re-arming
+            // honors "always auto play", bounded so a solver that keeps
+            // stopping cannot loop the fight forever. The generous deadline
+            // only catches a hung solver; real fights finish far sooner.
+            int failures = 0, rearmings = 0;
+            bool armed = false;
+            var deadline = DateTime.UtcNow + TimeSpan.FromMinutes(30);
+            while (!stop)
+            {
+                ct.ThrowIfCancellationRequested();
+                var state = await game.ReadState(ct);
+                var live = await game.Solver("status", ct);
+                if (!live.Flag("available")) return SolverOutcome.Missing;
+                // Transient non-combat frames (scene transitions, overlays) are
+                // not a finished fight: only the game's own combat flag ending
+                // confirms it, else the loop would hand back and immediately
+                // re-enter the same fight with a duplicate hand-over.
+                if (!InCombat(state) && !live.Flag("combat")) return SolverOutcome.Played;
+                if (DateTime.UtcNow >= deadline)
+                {
+                    Emit("agent_message", L10n.T("The Combat Solver stalled in this fight, so I will take it over.", "战斗路线求解器在这场战斗中卡住了，我来接管。"));
+                    return SolverOutcome.Refused;
+                }
+                if (live.Flag("full_auto")) { failures = 0; armed = true; }
+                else
+                {
+                    if (armed && ++rearmings > 100)
+                    {
+                        Emit("agent_message", L10n.T("The Combat Solver keeps stopping in this fight, so I will take it over.", "战斗路线求解器在这场战斗中反复停手，我来接管。"));
+                        return SolverOutcome.Refused;
+                    }
+                    if ((await game.Solver("enable", ct)).Flag("enabled")) armed = true;
+                    else if (++failures >= SolverEnableFailureLimit)
+                    {
+                        Emit("agent_message", L10n.T("The Combat Solver could not take this fight, so I will play it.", "战斗路线求解器没能接管这场战斗，这场我来打。"));
+                        return SolverOutcome.Refused;
+                    }
+                }
+                await Task.Delay(SolverPollDelay, ct);
+            }
+            return SolverOutcome.Played;
+        }
+        finally
+        {
+            // The solver's arm state is restored on the way out: stopping
+            // mid-fight must also halt its deployment. The gameplay token is
+            // already cancelled by then, so the disable rides its own timeout.
+            try { await game.Solver("disable", CancellationToken.None); } catch (Exception) { /* best effort */ }
+            lock (sync) solverCombat = false;
+        }
+    }
 
     // Called by the gameplay worker under sync, including between tool rounds.
     // Notify both live sessions so a waiting game agent also sees combat-time
@@ -790,4 +909,15 @@ internal sealed class BotRuntime : IDisposable
         return fresh;
     }
     public void Dispose() { StopGameplay(); lifetime.Cancel(); http.Dispose(); }
+}
+
+// The Combat Solver hand-off result for one fight.
+internal enum SolverOutcome
+{
+    // The solver played the fight to its end.
+    Played,
+    // The solver mod is not installed or loaded; the run cannot use it.
+    Missing,
+    // The solver declined or lost the take-over; Buddy plays this fight.
+    Refused,
 }

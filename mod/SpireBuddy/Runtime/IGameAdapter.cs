@@ -8,6 +8,10 @@ internal interface IGameAdapter
     Task<JsonNode> Execute(JsonNode command, string expectedSnapshot, Func<bool> mayExecute, CancellationToken ct);
     Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct);
     Task<JsonNode> ReadKnowledge(CancellationToken ct);
+    // The Combat Solver hand-off is optional; adapters without bridge access
+    // simply report the solver as unavailable.
+    Task<JsonNode> Solver(string op, CancellationToken ct) =>
+        Task.FromResult<JsonNode>(new JsonObject { ["available"] = false });
 }
 
 // Game callbacks and the final freshness check run together on the main thread.
@@ -17,7 +21,8 @@ internal sealed class ScheduledGameAdapter(
     Func<JsonNode> read,
     Func<JsonNode, JsonNode> execute,
     Func<string, string, string, int?, int?, JsonNode> search,
-    Func<JsonNode>? knowledge = null) : IGameAdapter
+    Func<JsonNode>? knowledge = null,
+    Func<string, JsonNode>? solver = null) : IGameAdapter
 {
     public async Task<JsonNode> ReadState(CancellationToken ct)
     {
@@ -41,6 +46,9 @@ internal sealed class ScheduledGameAdapter(
 
     public Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct) =>
         OnMain(_ => GameState.Public(search(query, itemType, rarity, offset, count))!, ct);
+
+    public Task<JsonNode> Solver(string op, CancellationToken ct) =>
+        OnMain(_ => GameState.Public(solver == null ? new JsonObject { ["available"] = false } : solver(op))!, ct);
 
     public Task<JsonNode> Execute(JsonNode command, string expectedSnapshot, Func<bool> mayExecute, CancellationToken ct)
     {

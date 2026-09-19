@@ -5,6 +5,7 @@ using System.Text.RegularExpressions;
 using SpireBuddy.Runtime;
 
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
+if (args.Contains("--dialogue")) { await DialogueChecks.Run(); return; }
 await CardChoiceChecks.Run();
 if (args.Contains("--card-choices")) return;
 await RestSiteChecks.Run();
@@ -12,6 +13,9 @@ await AdapterChecks.Run();
 BriefChecks.Run();
 await BriefChecks.Histories();
 await SessionChecks.Run();
+await SettleChecks.Run();
+await DialogueChecks.Run();
+await SolverChecks.Run();
 await NonCombatBatchChecks.Run();
 var state = JsonNode.Parse("""{"state_type":"monster","seed":5,"run":{"act":1,"floor":5,"ascension":10},"player":{"character":"The Defect","hp":43,"max_hp":75,"gold":125,"energy":1,"max_energy":3,"hand":[{"index":0,"name":"Strike","can_play":true,"target_type":"AnyEnemy"},{"index":1,"can_play":false}],"draw_pile":[{"name":"B"},{"name":"A"}],"potions":[{"slot":2,"target_type":"AnyEnemy"}]},"battle":{"round":1,"turn":"player","enemies":[{"entity_id":"a","enemy_id":"FROG","name":"Frog","hp":4,"max_hp":9,"rolled_move":"secret","intents":[{"type":"Attack","label":"8","title":"Aggressive"}]},{"entity_id":"dead","hp":0}]}}""")!;
 var pub = GameState.Public(state)!;
@@ -132,8 +136,7 @@ var transitionAdapter = new ScheduledGameAdapter(a => a(),
     (_, _, _, _, _) => new JsonObject());
 using (var transitionRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-transition-" + Guid.NewGuid().ToString("N")), "missing.dll", transitionAdapter))
 {
-    var stableMethod = typeof(BotRuntime).GetMethod("Stable", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-    var settled = await (Task<JsonNode>)stableMethod.Invoke(transitionRuntime, [CancellationToken.None, GameState.Fingerprint(characterMenu), embark])!;
+    var settled = await transitionRuntime.Stable(CancellationToken.None, GameState.Fingerprint(characterMenu), embark);
     Check(settled.Text("state_type") == "event" && transitionReads >= 8, "poll through repeated fading frames until Neow is stable");
 }
 // A rest animation can look stable while only potion disposal is available.
@@ -180,8 +183,7 @@ var orbAdapter = new ScheduledGameAdapter(a => a(), () => ++orbReads <= 6 ? pend
     _ => throw new Exception("settling must not mutate"), (_, _, _, _, _) => new JsonObject());
 using (var orbRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-orbs-" + Guid.NewGuid().ToString("N")), "missing.dll", orbAdapter))
 {
-    var stableMethod = typeof(BotRuntime).GetMethod("Stable", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-    var settled = await (Task<JsonNode>)stableMethod.Invoke(orbRuntime, [CancellationToken.None, null, null])!;
+    var settled = await orbRuntime.Stable(CancellationToken.None);
     Check(orbReads >= 9 && settled["player"]!["orbs"]![1]!.Text("name") == "Plasma",
         "settle waits through unchanged pending frames for the completed random orb");
 }

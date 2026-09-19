@@ -22,6 +22,7 @@ using MegaCrit.Sts2.Core.Nodes.Events.Custom;
 using MegaCrit.Sts2.Core.Nodes.Events.Custom.CrystalSphere;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
@@ -57,21 +58,41 @@ using Godot;
 
 namespace SpireBuddy.Game;
 
-internal static partial class GameBindings
-{
-    internal static Dictionary<string, object?> ReadState()
+    internal static partial class GameBindings
     {
-        var tree = (SceneTree)Engine.GetMainLoop();
-        var result = new Dictionary<string, object?>();
-        if (pendingOperation is { IsCompleted: true })
+        // Scene fades and NetLoadingHandle scopes (new-run embark, map/room
+        // entry, ancient-event intros) can run far longer than the runtime's
+        // settle budget on slow loads. The game's own transition markers tell
+        // the controller this delay is progress, not a stuck screen.
+        private static bool TransitionInProgress()
         {
-            var completed = pendingOperation;
-            pendingOperation = null;
-            completed.GetAwaiter().GetResult(); // Surface failures without issuing the action again.
+            try
+            {
+                if (NGame.Instance?.Transition?.InTransition == true) return true;
+                return RunManager.Instance.NetService?.IsGameLoading == true;
+            }
+            catch (ObjectDisposedException) { return false; }
+            catch (NullReferenceException) { return false; }
         }
-        var popup = BuildVisibleFtueState(tree.Root);
-        if (popup != null) return popup;
-        if (!RunManager.Instance.IsInProgress) return BuildMenu(tree.Root);
+
+        internal static Dictionary<string, object?> ReadState()
+        {
+            var tree = (SceneTree)Engine.GetMainLoop();
+            var result = new Dictionary<string, object?>();
+            if (pendingOperation is { IsCompleted: true })
+            {
+                var completed = pendingOperation;
+                pendingOperation = null;
+                completed.GetAwaiter().GetResult(); // Surface failures without issuing the action again.
+            }
+            var popup = BuildVisibleFtueState(tree.Root);
+            if (popup != null) return popup;
+            if (!RunManager.Instance.IsInProgress)
+            {
+                var menu = BuildMenu(tree.Root);
+                if (TransitionInProgress()) menu["loading"] = true;
+                return menu;
+            }
         var runState = RunManager.Instance.DebugOnlyGetState();
         if (runState == null) return new() { ["state_type"] = "unknown" };
         if (runState.Players.Count != 1)
@@ -311,6 +332,8 @@ internal static partial class GameBindings
             ["floor"] = runState.TotalFloor,
             ["ascension"] = runState.AscensionLevel
         };
+
+        if (TransitionInProgress()) result["loading"] = true;
 
         // Always include full player data (relics, potions, deck, etc.) on every screen
         var _player = LocalContext.GetMe(runState);

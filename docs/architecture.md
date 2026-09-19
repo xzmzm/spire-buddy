@@ -142,6 +142,10 @@ Empty or discard-only snapshots are still transitioning: the controller keeps
 polling until a non-discard action is available (or the run ends), within its
 30-second settle timeout. This lets delayed proceed buttons enter the action
 result and the existing automatic navigation path without a model refresh call.
+Ancient-event snapshots include the current dialogue line's position: the body,
+options and enabled hitbox can remain identical across consecutive lines. This
+lets each dialogue advance settle on observed progress before the next automatic
+click, without relying on animation frames or reading upcoming dialogue.
 A queued operation that is cancelled, times out, or sees a changed snapshot is
 rejected without retrying the mutation.
 

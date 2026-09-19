@@ -27,6 +27,10 @@ public static class Mod
     private static bool UiChinese;
     private static LineEdit Message = null!, Endpoint = null!, Model = null!, Key = null!;
     private static SpinBox MaxTokens = null!;
+    private static CheckButton UseCombatSolver = null!, HideCombatSolverUi = null!;
+    private static Label SolverHint = null!;
+    private static bool SolverAvailable, HideSolverOverlay;
+    private static ulong NextSolverProbe;
     private static OptionButton Api = null!, Personality = null!, Effort = null!;
     private static VBoxContainer CustomPersonalityFields = null!;
     private static TextEdit CustomPersonality = null!;
@@ -74,7 +78,8 @@ public static class Mod
                 () => JsonSerializer.SerializeToNode(GameBindings.ReadState())!,
                 command => JsonSerializer.SerializeToNode(GameBindings.Execute(command))!,
                 (query, itemType, rarity, offset, count) => JsonSerializer.SerializeToNode(GameBindings.SearchWiki(query, itemType, rarity, offset, count))!,
-                () => JsonSerializer.SerializeToNode(GameBindings.ReadKnowledge())!));
+                () => JsonSerializer.SerializeToNode(GameBindings.ReadKnowledge())!,
+                op => JsonSerializer.SerializeToNode(CombatSolverBridge.Dispatch(op))!));
     }
 
     private static void Frame()
@@ -85,6 +90,15 @@ public static class Mod
         {
             UpdateFonts();
             KeepPanelInView();
+            if (!SolverAvailable && Time.GetTicksMsec() >= NextSolverProbe)
+            {
+                NextSolverProbe = Time.GetTicksMsec() + 1000;
+                if (Game.CombatSolverBridge.Available) { SolverAvailable = true; UpdateSolverControls(); }
+            }
+            // The saved setting drives hiding, not the unsaved form. Deferred so
+            // it runs after the solver's own processing each frame and wins
+            // against its overlay re-showing right before drawing.
+            if (HideSolverOverlay) Callable.From(Game.CombatSolverBridge.SuppressCombatOverlay).CallDeferred();
             if (Notice.Visible && NoticeHideAt > 0 && Time.GetTicksMsec() >= NoticeHideAt) { Notice.Visible = false; NoticeHideAt = 0; }
             var dots = new string('.', (int)(Time.GetTicksMsec() / 400 % 3) + 1);
             Activity.Text = L10n.T("Buddy is thinking", "Buddy 正在思考") + dots;
@@ -313,6 +327,10 @@ public static class Mod
         Label(settings, L10n.T("Max context tokens", "最大上下文 token 数"));
         MaxTokens = new SpinBox { MinValue = 1, MaxValue = 100000000, Step = 1, Value = 250000 }; settings.AddChild(MaxTokens);
         Wrapped(settings, L10n.T("Starts a fresh session at this limit, keeping current game state and chat history that fits.", "达到该上限时会开启新会话，并保留当前游戏状态和能放下的聊天记录。"));
+        UseCombatSolver = new CheckButton { Text = L10n.T("Use Combat Solver to auto fight", "使用战斗路线求解器自动战斗") }; settings.AddChild(UseCombatSolver);
+        SolverHint = Wrapped(settings, ""); SolverHint.AddThemeFontSizeOverride("font_size", 14);
+        HideCombatSolverUi = new CheckButton { Text = L10n.T("Hide Combat Solver UI during combat", "战斗中隐藏战斗路线求解器界面") }; settings.AddChild(HideCombatSolverUi);
+        Wrapped(settings, L10n.T("The Combat Solver overlay normally appears during combat; this keeps it hidden.", "战斗路线求解器的界面通常会在战斗中出现；开启后保持隐藏。")).AddThemeFontSizeOverride("font_size", 14);
         // Keep actions at their natural height at the bottom while the form
         // takes the remaining space and scrolls when the window is smaller.
         var settingsActions = new VBoxContainer();
@@ -324,6 +342,18 @@ public static class Mod
         NoticeHideAt = 0;
         RestorePanelLayout();
         KeepPanelInView();
+        UpdateSolverControls();
+    }
+
+    // The solver toggles only act on the optional Combat Solver mod; without it
+    // they grey out and the hint explains what to install. Mods load one by one
+    // at startup, so availability is probed until it turns true.
+    private static void UpdateSolverControls()
+    {
+        UseCombatSolver.Disabled = HideCombatSolverUi.Disabled = !SolverAvailable;
+        SolverHint.Text = SolverAvailable
+            ? L10n.T("Buddy hands combats to the Combat Solver mod, which auto-plays them.", "Buddy 会把战斗交给战斗路线求解器 mod，由它自动出牌。")
+            : L10n.T("Install the Combat Solver mod to enable this.", "安装战斗路线求解器 mod 后才能启用此选项。");
     }
 
     private static string PanelLayoutPath => ProjectSettings.GlobalizePath("user://spire-buddy/panel-layout.json");
@@ -556,6 +586,8 @@ public static class Mod
         payload["max_context_tokens"] = (int)MaxTokens.Value;
         // The untouched mask means "keep the stored key", like a blank field.
         if (Key.Text.Length > 0 && Key.Text != MaskedKey) payload["api_key"] = Key.Text;
+        payload["use_combat_solver"] = UseCombatSolver.ButtonPressed;
+        payload["hide_combat_solver_ui"] = HideCombatSolverUi.ButtonPressed;
         return payload;
     }
     private static void SaveSettings() => Send("/settings", SettingsPayload(), () => { Key.Text = ""; KeyTouched = false; }, "PUT", L10n.T("Settings saved", "设置已保存"));
@@ -569,6 +601,8 @@ public static class Mod
         CustomPersonality.Text = Personalities.CustomText(config);
         CustomPersonalityFields.Visible = Selected(Personality) == "custom";
         Select(Effort, config["reasoning_effort"]?.ToString() ?? "default");
+        UseCombatSolver.ButtonPressed = config.Flag("use_combat_solver");
+        HideCombatSolverUi.ButtonPressed = config.Flag("hide_combat_solver_ui");
         InitializedSettings = true;
     }
 
@@ -647,6 +681,7 @@ public static class Mod
         bool chatting = data["chat_busy"]?.GetValue<bool>() == true;
         Status.Text = status == "running" ? L10n.T("● Playing", "● 游玩中") : status == "stopping" ? L10n.T("Stopping…", "正在停止…") : chatting ? L10n.T("● Thinking", "● 思考中") : status == "error" ? L10n.T("● Needs attention", "● 需要注意") : L10n.T("● Ready", "● 就绪");
         Alive = data["thread_alive"]?.GetValue<bool>() == true;
+        HideSolverOverlay = data["config"]?.Flag("hide_combat_solver_ui") ?? false;
         Test.Disabled = Probing; ModelPicker.Disabled = false;
         Save.Disabled = Alive || chatting || Busy; SendButton.Disabled = Busy;
         if (!InitializedSettings && data["config"] is JsonNode config)
