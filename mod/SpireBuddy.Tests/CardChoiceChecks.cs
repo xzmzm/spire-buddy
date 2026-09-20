@@ -153,7 +153,7 @@ internal static class CardChoiceChecks
             """)!;
         internal readonly List<string> Log = [];
         internal Action? AfterSelect;
-        internal IGameAdapter Adapter => new ScheduledGameAdapter(a => a(), () => State.DeepClone(), Execute, (_, _, _, _, _) => new JsonObject());
+        internal IGameAdapter Adapter => new ScheduledGameAdapter(a => a(), () => State.DeepClone(), Execute, (_, _, _, _, _, _) => new JsonObject());
         JsonArray Hand => State["player"]!["hand"]!.AsArray();
         internal Battle(string mode = "basic")
         {

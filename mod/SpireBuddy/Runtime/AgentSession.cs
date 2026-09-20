@@ -38,12 +38,16 @@ internal sealed class AgentSession(string role)
         return Math.Max(estimate, measured) > settings["max_context_tokens"]!.GetValue<int>();
     }
 
-    internal void State(JsonNode state)
+    // force re-anchors the session after play-status changes: the unchanged
+    // state is repeated in full so the next decision carries a current picture
+    // even when a trailing diff already delivered the same bytes.
+    internal void State(JsonNode state, bool force = false)
     {
-        if (JsonNode.DeepEquals(previousState, state)) return;
+        var unchanged = JsonNode.DeepEquals(previousState, state);
+        if (unchanged && !force) return;
         var full = "Current public game state:\n" + state.WriteString();
         var message = full;
-        if (previousState != null)
+        if (previousState != null && !unchanged)
         {
             var changes = new JsonArray();
             Diff(previousState, state, "", changes);
@@ -79,5 +83,6 @@ internal sealed class GameplayAgent(string role, string instructions)
     internal AgentSession Session { get; } = new(role);
     internal string Instructions { get; set; } = instructions;
     internal string Plan { get; set; } = "";
+    internal string Feedback { get; set; } = "";
     internal Queue<string> Inbox { get; } = new();
 }

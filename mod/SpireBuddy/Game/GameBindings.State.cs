@@ -283,6 +283,13 @@ internal static partial class GameBindings
     private static long CardInstanceId(CardModel card) =>
         CardIdentities.GetValue(card, _ => new CardIdentity(System.Threading.Interlocked.Increment(ref nextCardIdentity))).Value;
 
+    // Reward indexes shrink as other rewards are claimed. Stable object IDs let
+    // Jev remember a skipped potion even when identical rewards are reindexed.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Reward, CardIdentity> RewardIdentities = new();
+    private static long nextRewardIdentity;
+    private static long RewardInstanceId(Reward reward) =>
+        RewardIdentities.GetValue(reward, _ => new CardIdentity(System.Threading.Interlocked.Increment(ref nextRewardIdentity))).Value;
+
     private static void AddPreviewCardsFromContainer(
         Godot.Control? container,
         List<Dictionary<string, object?>> previewCards)
@@ -436,6 +443,13 @@ internal static partial class GameBindings
                 var optData = new Dictionary<string, object?>
                 {
                     ["index"] = index,
+                    // Multi-line events such as The Architect regenerate an
+                    // identical-looking option for every dialogue line: same
+                    // title, description, locked and proceed flags. The text
+                    // key carries the line position (THE_ARCHITECT.dialogue.2,
+                    // PROCEED), so each consumed click changes the public
+                    // fingerprint and settles as observed progress.
+                    ["text_key"] = SafeGetText(() => opt.TextKey),
                     ["title"] = SafeGetText(() => opt.Title),
                     ["description"] = SafeGetText(() => opt.Description),
                     ["is_locked"] = opt.IsLocked,
@@ -457,12 +471,33 @@ internal static partial class GameBindings
         return state;
     }
 
+    private static FakeMerchant? GetFakeMerchantEvent(EventRoom eventRoom, Player? player)
+    {
+        if (player == null || eventRoom.CanonicalEvent is not FakeMerchant) return null;
+        // LocalMutableEvent calls GetLocalEvent(), which indexes Events by player
+        // slot. During room asset loading that list may be empty or still contain
+        // the previous event. Read only a matching initialized mutable copy; the
+        // canonical template has no player inventory and is never a fallback.
+        return RunManager.Instance.EventSynchronizer.Events.OfType<FakeMerchant>()
+            .FirstOrDefault(e => e.Owner == player && e.Id == eventRoom.CanonicalEvent.Id);
+    }
+
     private static Dictionary<string, object?> BuildFakeMerchantState(EventRoom eventRoom, RunState runState)
     {
         var state = new Dictionary<string, object?>();
-        // LocalMutableEvent holds the per-player mutable copy with populated inventory;
-        // CanonicalEvent is the shared template which may not have it.
-        var fakeMerchant = (FakeMerchant)(eventRoom.LocalMutableEvent ?? eventRoom.CanonicalEvent);
+        if (GetFakeMerchantEvent(eventRoom, LocalContext.GetMe(runState)) is not FakeMerchant fakeMerchant)
+        {
+            state["event_id"] = eventRoom.CanonicalEvent.Id.Entry;
+            state["event_name"] = SafeGetText(() => eventRoom.CanonicalEvent.Title);
+            state["started_fight"] = false;
+            state["shop"] = new Dictionary<string, object?>
+            {
+                ["items"] = new List<Dictionary<string, object?>>(),
+                ["can_proceed"] = false
+            };
+            state["message"] = "The merchant is still setting up his wares; retry in a moment.";
+            return state;
+        }
 
         state["event_id"] = fakeMerchant.Id.Entry;
         state["event_name"] = SafeGetText(() => fakeMerchant.Title);
@@ -853,6 +888,7 @@ internal static partial class GameBindings
             {
                 ["index"] = index,
                 ["type"] = GetRewardTypeName(reward),
+                ["reward_id"] = RewardInstanceId(reward),
                 ["description"] = SafeGetText(() => reward.Description)
             };
 
@@ -938,6 +974,16 @@ internal static partial class GameBindings
 
             var cardInfo = BuildCardInfo(card);
             cardInfo["index"] = index;
+            if (screen is NDeckUpgradeSelectScreen)
+            {
+                var upgraded = SafeBuildUpgradedCardPreview(card);
+                cardInfo["upgrade_description"] = upgraded == null ? SafeGetCardUpgradePreviewDescription(card) : SafeGetCardDescription(upgraded);
+                if (upgraded != null)
+                {
+                    cardInfo["upgrade_cost"] = GetCostDisplay(upgraded);
+                    cardInfo["upgrade_star_cost"] = GetStarCostDisplay(upgraded);
+                }
+            }
             cards.Add(cardInfo);
             index++;
         }

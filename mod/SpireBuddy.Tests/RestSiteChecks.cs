@@ -94,7 +94,7 @@ internal static class RestSiteChecks
             }
             else state = commands == 2 ? SessionHandler.Map() : JsonNode.Parse("""{"state_type":"game_over"}""")!;
             return new JsonObject { ["status"] = "ok" };
-        }, (_, _, _, _, _) => new JsonObject());
+        }, (_, _, _, _, _, _) => new JsonObject());
         using var runtime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-rest-" + Guid.NewGuid().ToString("N")), "missing.dll", game, handler);
         await runtime.Dispatch("PUT", "/settings", new JsonObject { ["api_endpoint"] = "http://model/v1", ["model"] = "test", ["api_type"] = api });
         runtime.StartGameplay("Rest to heal, then continue.", "run");

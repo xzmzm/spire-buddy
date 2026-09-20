@@ -6,7 +6,7 @@ internal interface IGameAdapter
 {
     Task<JsonNode> ReadState(CancellationToken ct);
     Task<JsonNode> Execute(JsonNode command, string expectedSnapshot, Func<bool> mayExecute, CancellationToken ct);
-    Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct);
+    Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct);
     Task<JsonNode> ReadKnowledge(CancellationToken ct);
     // The Combat Solver hand-off is optional; adapters without bridge access
     // simply report the solver as unavailable.
@@ -20,7 +20,7 @@ internal sealed class ScheduledGameAdapter(
     Action<Action> schedule,
     Func<JsonNode> read,
     Func<JsonNode, JsonNode> execute,
-    Func<string, string, string, int?, int?, JsonNode> search,
+    Func<string, string, string, string?, int?, int?, JsonNode> search,
     Func<JsonNode>? knowledge = null,
     Func<string, JsonNode>? solver = null) : IGameAdapter
 {
@@ -44,8 +44,8 @@ internal sealed class ScheduledGameAdapter(
     public Task<JsonNode> ReadKnowledge(CancellationToken ct) =>
         OnMain(_ => GameState.Public(knowledge == null ? new JsonObject() : knowledge())!, ct);
 
-    public Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct) =>
-        OnMain(_ => GameState.Public(search(query, itemType, rarity, offset, count))!, ct);
+    public Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct) =>
+        OnMain(_ => GameState.Public(search(query, itemType, rarity, character, offset, count))!, ct);
 
     public Task<JsonNode> Solver(string op, CancellationToken ct) =>
         OnMain(_ => GameState.Public(solver == null ? new JsonObject { ["available"] = false } : solver(op))!, ct);

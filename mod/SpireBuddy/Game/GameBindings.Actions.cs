@@ -73,7 +73,7 @@ internal static partial class GameBindings
             "advance_dialogue" => ExecuteAdvanceDialogue(),
             "choose_rest_option" => ExecuteChooseRestOption(data),
             "shop_purchase" => ExecuteShopPurchase(player, data),
-            "claim_reward" => ExecuteClaimReward(data),
+            "claim_reward" => ExecuteClaimReward(player, data),
             "select_card_reward" => ExecuteSelectCardReward(data),
             "skip_card_reward" => ExecuteSkipCardReward(),
             "proceed" => ExecuteProceed(),
@@ -365,10 +365,9 @@ internal static partial class GameBindings
             inventory = merchantRoom.GetLocalInventory();
         }
         else if (player.RunState.CurrentRoom is EventRoom eventRoom
-                 && eventRoom.CanonicalEvent is FakeMerchant
-                 && (eventRoom.LocalMutableEvent ?? eventRoom.CanonicalEvent) is FakeMerchant fakeMerchant)
+                 && eventRoom.CanonicalEvent is FakeMerchant)
         {
-            inventory = fakeMerchant.Inventory;
+            inventory = GetFakeMerchantEvent(eventRoom, player)?.Inventory;
         }
         else
         {
@@ -435,7 +434,7 @@ internal static partial class GameBindings
         };
     }
 
-    private static Dictionary<string, object?> ExecuteClaimReward(Dictionary<string, JsonElement> data)
+    private static Dictionary<string, object?> ExecuteClaimReward(Player player, Dictionary<string, JsonElement> data)
     {
         var overlay = NOverlayStack.Instance?.Peek();
         if (overlay is not NRewardsScreen rewardsScreen)
@@ -455,6 +454,20 @@ internal static partial class GameBindings
 
         var button = enabledButtons[index];
         var reward = button.Reward!;
+        // The game keeps the potion reward button enabled with full potion
+        // slots and silently ignores the click, which would otherwise stall
+        // the post-action settle wait. Reject before clicking (nothing was
+        // mutated) so the controller can discard a potion and retry.
+        if (reward is PotionReward && !player.PotionSlots.Any(slot => slot == null))
+        {
+            int held = player.PotionSlots.Count(slot => slot != null);
+            return new Dictionary<string, object?>
+            {
+                ["status"] = "error",
+                ["executed"] = false,
+                ["error"] = $"Potion slots are full ({held}/{player.PotionSlots.Count}). Discard a potion before claiming a potion reward."
+            };
+        }
         string rewardDesc = GetRewardTypeName(reward);
         if (reward is GoldReward g)
             rewardDesc = $"gold ({g.Amount})";

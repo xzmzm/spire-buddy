@@ -6,6 +6,11 @@ using SpireBuddy.Runtime;
 
 static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
 if (args.Contains("--dialogue")) { await DialogueChecks.Run(); return; }
+if (args.Contains("--solver")) { await SolverChecks.Run(); return; }
+if (args.Contains("--jev")) { await JevChecks.Run(); return; }
+if (args.Contains("--jev-strategy")) { await JevStrategyChecks.Run(); return; }
+if (args.Contains("--non-combat")) { await NonCombatBatchChecks.Run(); await AdapterChecks.Run(); return; }
+if (args.Contains("--merchant")) { await MerchantChecks.Run(); return; }
 await CardChoiceChecks.Run();
 if (args.Contains("--card-choices")) return;
 await RestSiteChecks.Run();
@@ -16,6 +21,9 @@ await SessionChecks.Run();
 await SettleChecks.Run();
 await DialogueChecks.Run();
 await SolverChecks.Run();
+await JevChecks.Run();
+await JevStrategyChecks.Run();
+await MerchantChecks.Run();
 await NonCombatBatchChecks.Run();
 var state = JsonNode.Parse("""{"state_type":"monster","seed":5,"run":{"act":1,"floor":5,"ascension":10},"player":{"character":"The Defect","hp":43,"max_hp":75,"gold":125,"energy":1,"max_energy":3,"hand":[{"index":0,"name":"Strike","can_play":true,"target_type":"AnyEnemy"},{"index":1,"can_play":false}],"draw_pile":[{"name":"B"},{"name":"A"}],"potions":[{"slot":2,"target_type":"AnyEnemy"}]},"battle":{"round":1,"turn":"player","enemies":[{"entity_id":"a","enemy_id":"FROG","name":"Frog","hp":4,"max_hp":9,"rolled_move":"secret","intents":[{"type":"Attack","label":"8","title":"Aggressive"}]},{"entity_id":"dead","hp":0}]}}""")!;
 var pub = GameState.Public(state)!;
@@ -74,6 +82,13 @@ Check(GameState.ForcedAction(closedShop, GameState.Actions(closedShop))?["comman
 Check(GameState.ForcedAction(closedShop, GameState.Actions(closedShop), merchantOpened: true)?["command"]!.Text("action") == "proceed", "visited shop proceeds without reopening");
 var emptyShop = JsonNode.Parse("""{"state_type":"shop","shop":{"can_close":true,"can_proceed":true,"items":[]},"player":{"potions":[]}}""")!;
 Check(GameState.ForcedAction(emptyShop, GameState.Actions(emptyShop))?["command"]!.Text("action") == "close_shop", "empty shop closes automatically");
+var closedChest = JsonNode.Parse("""{"state_type":"treasure","treasure":{"can_open":true},"player":{"potions":[]}}""")!;
+Check(GameState.ForcedAction(closedChest, GameState.Actions(closedChest))?["command"]!.Text("action") == "open_chest", "a lone chest button opens automatically even without the setting");
+var openedChest = JsonNode.Parse("""{"state_type":"treasure","treasure":{"relics":[{"index":0,"name":"Capsule"}]},"player":{"potions":[]}}""")!;
+Check(GameState.ForcedAction(openedChest, GameState.Actions(openedChest)) == null, "treasure relics stay model-owned by default");
+Check(GameState.ForcedAction(openedChest, GameState.Actions(openedChest), autoTreasure: true)?["command"]!.Text("action") == "claim_treasure_relic", "auto treasure claims the revealed relic");
+var multiRelicChest = JsonNode.Parse("""{"state_type":"treasure","treasure":{"relics":[{"index":0,"name":"Capsule"},{"index":1,"name":"Lantern"}],"can_proceed":true},"player":{"potions":[]}}""")!;
+Check(GameState.ForcedAction(multiRelicChest, GameState.Actions(multiRelicChest), autoTreasure: true)?["command"]!.Text("action") == "claim_treasure_relic", "auto treasure takes relics in order before proceeding");
 var transformGrid = JsonNode.Parse("""{"state_type":"card_select","card_select":{"screen_type":"transform","preview_showing":false,"cards":[{"index":0,"name":"Defend"},{"index":1,"name":"Strike"}]},"player":{"potions":[]}}""")!;
 Check(GameState.ForcedAction(transformGrid, GameState.Actions(transformGrid)) == null, "which card to transform stays model-owned");
 var transformPreview = JsonNode.Parse("""{"state_type":"card_select","card_select":{"screen_type":"transform","preview_showing":true,"preview_cards":[{"index":0,"name":"Defend"}],"cards":[{"index":0,"name":"Defend","selected":true}],"selected_indices":[0],"can_confirm":true,"can_cancel":true},"player":{"potions":[{"slot":0,"name":"Fire Potion"}]}}""")!;
@@ -106,6 +121,19 @@ using (var automaticShopRuntime = new BotRuntime(Path.Combine(Path.GetTempPath()
     while (automaticShopStatus.Flag("thread_alive") && DateTime.UtcNow < automaticShopDeadline);
     Check(!automaticShopStatus.Flag("thread_alive") && automaticShopAdapter.Commands == 3, "shop entry, close, and proceed skip model round trips");
 }
+// A treasure room loots itself end to end on the shipped default setting: the
+// chest opens, the relic is claimed, and the room is left, each without a
+// model round trip.
+var automaticTreasureAdapter = new AutomaticTreasureAdapter();
+using (var automaticTreasureRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-automatic-treasure-" + Guid.NewGuid().ToString("N")), "missing.dll", automaticTreasureAdapter))
+{
+    automaticTreasureRuntime.StartGameplay("test", "run");
+    JsonNode automaticTreasureStatus;
+    var automaticTreasureDeadline = DateTime.UtcNow.AddSeconds(5);
+    do { await Task.Delay(20); automaticTreasureStatus = await automaticTreasureRuntime.Dispatch("GET", "/status", null); }
+    while (automaticTreasureStatus.Flag("thread_alive") && DateTime.UtcNow < automaticTreasureDeadline);
+    Check(!automaticTreasureStatus.Flag("thread_alive") && automaticTreasureAdapter.Commands == 3, "treasure open, claim, and proceed skip model round trips");
+}
 // A run resumed while the game already shows the transform confirmation must
 // confirm the pending selection without waiting for a model decision.
 var automaticTransformAdapter = new AutomaticTransformAdapter();
@@ -133,7 +161,7 @@ int transitionReads = 0;
 var transitionAdapter = new ScheduledGameAdapter(a => a(),
     () => ++transitionReads <= 5 ? fadingMenu : neow,
     _ => throw new Exception("settling must never execute another action"),
-    (_, _, _, _, _) => new JsonObject());
+    (_, _, _, _, _, _) => new JsonObject());
 using (var transitionRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-transition-" + Guid.NewGuid().ToString("N")), "missing.dll", transitionAdapter))
 {
     var settled = await transitionRuntime.Stable(CancellationToken.None, GameState.Fingerprint(characterMenu), embark);
@@ -146,7 +174,7 @@ Check(!GameState.HasSuitableActions(GameState.Actions(resting)), "discard-only i
 Check(!GameState.HasSuitableActions(new JsonArray()), "empty actions need a retry");
 int retryReads = 0;
 var retryAdapter = new ScheduledGameAdapter(a => a(), () => { retryReads++; return rested; },
-    _ => throw new Exception("legal-action retry must not mutate"), (_, _, _, _, _) => new JsonObject());
+    _ => throw new Exception("legal-action retry must not mutate"), (_, _, _, _, _, _) => new JsonObject());
 using (var retryRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-retry-" + Guid.NewGuid().ToString("N")), "missing.dll", retryAdapter))
 {
     var timer = System.Diagnostics.Stopwatch.StartNew();
@@ -180,7 +208,7 @@ pendingChoice["hand_select"] = JsonNode.Parse("""{"cards":[{"index":0,"name":"De
 Check(GameState.Ready(pendingChoice), "a pending action may still request a player selection");
 int orbReads = 0;
 var orbAdapter = new ScheduledGameAdapter(a => a(), () => ++orbReads <= 6 ? pendingOrbs : resolvedOrbs,
-    _ => throw new Exception("settling must not mutate"), (_, _, _, _, _) => new JsonObject());
+    _ => throw new Exception("settling must not mutate"), (_, _, _, _, _, _) => new JsonObject());
 using (var orbRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-orbs-" + Guid.NewGuid().ToString("N")), "missing.dll", orbAdapter))
 {
     var settled = await orbRuntime.Stable(CancellationToken.None);
@@ -332,7 +360,7 @@ sealed class AutomaticAdapter : IGameAdapter
         return Task.FromResult<JsonNode>(new JsonObject { ["status"] = "ok" });
     }
 
-    public Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
+    public Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 
     public Task<JsonNode> ReadKnowledge(CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 }
@@ -358,8 +386,34 @@ sealed class AutomaticShopAdapter : IGameAdapter
         return Task.FromResult<JsonNode>(new JsonObject { ["status"] = "ok" });
     }
 
-    public Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
+    public Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 
+
+    public Task<JsonNode> ReadKnowledge(CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
+}
+
+sealed class AutomaticTreasureAdapter : IGameAdapter
+{
+    JsonNode state = JsonNode.Parse("""{"state_type":"treasure","treasure":{"can_open":true},"player":{"potions":[]}}""")!;
+    public int Commands { get; private set; }
+
+    public Task<JsonNode> ReadState(CancellationToken ct) => Task.FromResult(state.DeepClone());
+
+    public Task<JsonNode> Execute(JsonNode command, string expectedSnapshot, Func<bool> mayExecute, CancellationToken ct)
+    {
+        if (!mayExecute()) return Task.FromResult<JsonNode>(new JsonObject { ["status"] = "error", ["executed"] = false });
+        Commands++;
+        state = command.Text("action") switch
+        {
+            "open_chest" => JsonNode.Parse("""{"state_type":"treasure","treasure":{"relics":[{"index":0,"name":"Capsule"}]},"player":{"potions":[]}}""")!,
+            "claim_treasure_relic" => JsonNode.Parse("""{"state_type":"treasure","treasure":{"can_proceed":true},"player":{"potions":[]}}""")!,
+            "proceed" => JsonNode.Parse("""{"state_type":"game_over"}""")!,
+            _ => throw new Exception("Unexpected automatic treasure action: " + command.Text("action"))
+        };
+        return Task.FromResult<JsonNode>(new JsonObject { ["status"] = "ok" });
+    }
+
+    public Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 
     public Task<JsonNode> ReadKnowledge(CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 }
@@ -383,7 +437,7 @@ sealed class AutomaticTransformAdapter : IGameAdapter
         return Task.FromResult<JsonNode>(new JsonObject { ["status"] = "ok" });
     }
 
-    public Task<JsonNode> Search(string query, string itemType, string rarity, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
+    public Task<JsonNode> Search(string query, string itemType, string rarity, string? character, int? offset, int? count, CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
 
 
     public Task<JsonNode> ReadKnowledge(CancellationToken ct) => Task.FromResult<JsonNode>(new JsonObject());
@@ -426,7 +480,7 @@ sealed class FakeHandler(string api, string mode) : HttpMessageHandler
             if (mode == "timeout") throw new TaskCanceledException("uncertain mutation");
             return new JsonObject { ["status"] = "ok" };
         },
-        (query, itemType, rarity, offset, count) => new JsonObject { ["results"] = new JsonArray() },
+        (query, itemType, rarity, character, offset, count) => new JsonObject { ["results"] = new JsonArray() },
         () => { KnowledgeReads++; return JsonNode.Parse("""{"odds":{"status":"ok","potion_reward_chance_normal_combat":"40%"},"run_history":{"status":"ok","win_rate":"50%","runs":[]}}""")!; });
     JsonNode VigorBeamState()
     {

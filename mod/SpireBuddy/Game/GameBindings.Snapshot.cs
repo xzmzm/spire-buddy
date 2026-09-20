@@ -103,6 +103,10 @@ namespace SpireBuddy.Game;
         var topOverlay = NOverlayStack.Instance?.Peek();
         var currentRoom = runState.CurrentRoom;
         bool liveCombat = currentRoom is CombatRoom && CombatManager.Instance.IsInProgress;
+        // Selection overlays replace state_type even during combat (including
+        // Choices Paradox before the first turn). Keep fight ownership separate
+        // from the visible screen so the solver also owns these choices.
+        result["in_combat"] = liveCombat;
         bool mapIsVisible = IsNodeVisible(NMapScreen.Instance);
         // NMapScreen.IsOpen can briefly linger after a combat map view is closed.
         // During a live fight, visibility is the authoritative signal; otherwise a
@@ -220,12 +224,10 @@ namespace SpireBuddy.Game;
                 {
                     result["state_type"] = "hand_select";
                     result["hand_select"] = BuildHandSelectState(playerHand, runState);
-                    result["battle"] = BuildBattleState(runState, combatRoom);
                 }
                 else
                 {
                     result["state_type"] = combatRoom.RoomType.ToString().ToLower(); // monster, elite, boss
-                    result["battle"] = BuildBattleState(runState, combatRoom);
                 }
             }
             else
@@ -324,6 +326,9 @@ namespace SpireBuddy.Game;
             result["state_type"] = "unknown";
             result["room_type"] = currentRoom?.GetType().Name;
         }
+
+        if (liveCombat && currentRoom is CombatRoom activeCombatRoom)
+            result["battle"] = BuildBattleState(runState, activeCombatRoom);
 
         // Common run info
         result["run"] = new Dictionary<string, object?>

@@ -16,7 +16,7 @@ internal static class AdapterChecks
         var adapter = new ScheduledGameAdapter(queue.Enqueue,
             () => { duringRead?.Invoke(); return state; },
             c => { Check(c["index"]!.GetValue<int>() == 0, "command ownership"); mutations++; return new JsonObject { ["status"] = "ok" }; },
-            (q, type, rarity, offset, count) => { searches++; return new JsonObject { ["query"] = q, ["item_type"] = type, ["rarity"] = rarity, ["offset"] = offset, ["count"] = count, ["seed"] = 1 }; });
+            (q, type, rarity, character, offset, count) => { searches++; return new JsonObject { ["query"] = q, ["item_type"] = type, ["rarity"] = rarity, ["character"] = character, ["offset"] = offset, ["count"] = count, ["seed"] = 1 }; });
         Task<JsonNode> Execute(CancellationToken ct = default) => adapter.Execute(command, fingerprint, () => permitted, ct);
         void Pump() => queue.Dequeue()();
 
@@ -32,7 +32,7 @@ internal static class AdapterChecks
         // 30-second settle watchdog cannot turn ordinary map browsing into a stop.
         JsonNode pausedState = JsonNode.Parse("""{"state_type":"overlay","overlay":{"screen_type":"combat_map","wait_for_player":true}}""")!;
         var pauseAdapter = new ScheduledGameAdapter(a => a(), () => pausedState,
-            _ => new JsonObject { ["status"] = "ok" }, (_, _, _, _, _) => new JsonObject());
+            _ => new JsonObject { ["status"] = "ok" }, (_, _, _, _, _, _) => new JsonObject());
         var pausedRead = pauseAdapter.ReadState(default);
         await Task.Delay(50);
         Check(!pausedRead.IsCompleted, "player overlay pauses state reads without completing");
@@ -49,7 +49,7 @@ internal static class AdapterChecks
             await MustCancel(cancelledRead);
         }
 
-        var searching = adapter.Search("strike", "card", "all", 0, 10, default);
+        var searching = adapter.Search("strike", "card", "all", null, 0, 10, default);
         Check(searches == 0, "search waits for main thread"); Pump();
         Check((await searching).Text("query") == "strike" && (await searching).Text("offset") == "0" && (await searching).Text("rarity") == "all" && searches == 1 && mutations == 0, "read-only native search");
 
@@ -83,7 +83,7 @@ internal static class AdapterChecks
         duringRead = null;
 
         var uncertain = new ScheduledGameAdapter(queue.Enqueue, () => state,
-            _ => { mutations++; throw new InvalidOperationException("action failed after dispatch"); }, (_, _, _, _, _) => new JsonObject());
+            _ => { mutations++; throw new InvalidOperationException("action failed after dispatch"); }, (_, _, _, _, _, _) => new JsonObject());
         action = uncertain.Execute(command, fingerprint, () => true, default); Pump();
         try { await action; throw new Exception("uncertain error was swallowed"); }
         catch (InvalidOperationException) { }

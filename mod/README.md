@@ -70,9 +70,14 @@ dotnet build .\mod\SpireBuddy -c Release -p:STS2GameDataDir="C:\path\to\data_sts
 
 ## Configure and use
 
-Set the endpoint, model, API format, reasoning effort, personality, and **Max
-context tokens** in **Settings**. The endpoint is a base URL, so include the
-provider's API prefix, such as `https://api.openai.com/v1`.
+**Settings** starts with collapsed sections for **Buddy's personality**,
+**Buddy model & connection**, **Jev decisions**, **Gameplay automation**, and
+**Context limit**. Expand a heading to edit it; **Save settings** stays visible
+below the scrolling form. Connection tests use the values currently in the form.
+
+Set Buddy's endpoint, model, API format, and reasoning effort under **Buddy model
+& connection**. Its endpoint is a base URL, so include the provider's API prefix,
+such as `https://api.openai.com/v1`.
 
 When no saved settings or environment overrides exist, the first-run defaults are:
 
@@ -83,15 +88,19 @@ When no saved settings or environment overrides exist, the first-run defaults ar
 | API format | `responses` |
 | Personality | Witty streamer (`witty_streamer`) |
 | Max context tokens | `250000` |
-| Use Combat Solver to auto fight | Off |
-| Hide Combat Solver UI during combat | Off |
+| Use Combat Solver | Off |
+| Hide Combat Solver UI | Off |
+| Auto loot treasure chests | On |
+| Use Jev for strategy / combat | Both off |
+| Jev evaluation URL | `https://api.typesafe.ai/v1/systemone` |
+| Jev model | `jev-latest` |
 
 If `STS2_BOT_BASE_URL` or `STS2_BOT_MODEL` is set, it seeds the
 corresponding first-run value. Replace the local endpoint and default model unless
 that endpoint is intentional.
 Use `responses` with a Responses-compatible provider or
 `chat_completions` with a provider that implements `/chat/completions`.
-**Test connection** and model discovery use the unsaved form values. If the key
+**Test Buddy connection** and model discovery use the unsaved form values. If the key
 field is untouched, the stored key is used. Save only while play and pending Buddy
 replies are idle.
 
@@ -116,20 +125,88 @@ masked asterisks while a key is stored; type a new key to replace it, or leave t
 mask untouched to keep the stored key. Agent sessions and the visible chat feed
 are in memory for the current game process.
 
+### Jev decisions
+
+Expand **Jev decisions** to configure a full evaluation URL, model ID, and separate
+API key, then use **Test Jev connection**. The default URL follows the
+[TypeSafe API reference](https://docs.typesafe.ai/api); a compatible custom URL is
+used exactly as entered, with no path appended. The Jev key persists and is masked
+independently of Buddy's key. Blank or unchanged masked fields keep saved keys.
+Jev connection testing works even while its decision toggles are off.
+
+- **Use Jev for strategy** replaces the game/map model's decisions for menus,
+  paths, events, rewards, shops, rest sites and other campaign choices.
+- **Use Jev for combat** replaces the combat model, including card-selection
+  screens within a fight. An enabled, available Combat Solver has priority.
+  Jev handles a fight if the solver is off, missing or refuses control.
+
+Enable both to use Jev for all model-controlled gameplay. Buddy's chat continues
+using **Buddy model & connection**, including starting, stopping and relaying
+strategy updates. Automatic navigation and treasure handling still avoid model
+requests. With a Jev toggle off, the corresponding existing gameplay model is used.
+
+With **Use Jev for strategy** enabled, rewards follow this order:
+
+1. Take gold automatically, then open card rewards.
+2. Let Jev choose a card or skip the card reward.
+3. Back on the reward screen, take relics automatically.
+4. Take potions automatically while slots are free. With a full inventory, Jev
+   chooses **replace potion slot N** (discard that held potion, then take the
+   offered potion) or **skip this potion**. Each remaining potion is considered
+   separately, so skipping one does not skip the others.
+5. Proceed automatically when rewards have been handled. Skipped potions stay
+   on the game screen until proceeding leaves them behind.
+
+Jev's shop brief and choices include only stocked items priced at or below current
+gold, with their prices. Full potion slots replace the ordinary potion purchase
+with one replacement option per held slot; Jev can also buy another item or leave.
+Affordability is refreshed after every purchase. Each replacement settles the
+discard, rechecks the specific offered item and price, and only then claims or
+buys it. A stop, uncertain discard, or unexpected state change interrupts the
+remaining step. These reward and replacement rules apply only to Jev strategy.
+
+The shop question states the exact current gold balance and asks Jev to compare
+useful combinations of purchases, removal, and saving for a concrete need. Each
+purchase choice shows the gold left afterward; card removal and finishing the
+shop have explicit descriptions. Buying one item keeps shopping open for another
+decision, with the budget and affordability refreshed each time. Player spending
+instructions remain part of every request.
+
+Each Jev request contains a fresh public brief and a typed choice among current
+legal actions. It includes player instructions, HP/resources, unique card rules,
+deck/pile composition, relics and counters, potion slots, visible options and
+upgrade previews, reachable map topology/boss, and combat intents/effects. Repeated
+cards and mechanic descriptions are compacted; only four recent action summaries
+and any failure feedback are carried forward. There is no growing chat history,
+tool schema, or hidden RNG information in the request. Jev chooses one action at a
+time (a potion replacement includes its discard and pickup), then receives the
+settled state for its next decision. Commentary describes
+the selected action locally; Jev's choice API does not generate a prose rationale.
+
+Every selected action passes the same freshness, guidance and stop checks as
+Buddy's decisions. Invalid answers stop play; rate limits and overloads have
+bounded retries. Screens with over 255 legal options use grouped comparisons
+followed by a comparison of the winners. **Max context tokens** also bounds each
+complete Jev request; an oversized request stops with a settings hint rather than
+silently omitting choices or state. Token usage is recorded in `jev_response`
+trace events.
+
 ### Combat Solver integration
 
-**Settings** offers two optional toggles for the [Combat Solver](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961)
+**Settings → Gameplay automation** offers two optional toggles for the [Combat Solver](https://steamcommunity.com/sharedfiles/filedetails/?id=3790899961)
 workshop mod (战斗路线求解器). Both grey out with an install hint while that mod
 is missing, and wake up once its assembly has loaded:
 
-- **Use Combat Solver to auto fight** — Buddy hands each combat to the solver's
-  full-auto mode instead of playing fights with its own combat model. The solver
-  is armed at every combat start and re-armed whenever it stops itself
+- **Use Combat Solver** — Buddy hands each combat to the solver's
+  full-auto mode instead of playing fights with its own combat model. Combat
+  choices, including Choices Paradox before the first turn, stay under the
+  solver's control so its planned card selection and route are preserved. The
+  solver is armed at every combat start and re-armed whenever it stops itself
   mid-fight, so it auto-plays the whole combat; Buddy resumes on the next
   non-combat screen. If the solver is unavailable, disabled in its own
   settings, or refuses the take-over, Buddy falls back to playing the fight
   itself and says so in the feed. Saying **stop** also disarms the solver.
-- **Hide Combat Solver UI during combat** — the solver's overlay normally
+- **Hide Combat Solver UI** — the solver's overlay normally
   appears during combat; with this on, Buddy keeps it hidden for the whole
   fight. The toggle acts whenever combat is in progress, whether or not Buddy
   is playing.
@@ -246,10 +323,17 @@ completed actions without an extra model inspection call.
 Routine transitions are handled locally when no strategic choice remains: opening a
 merchant, closing an empty or exhausted inventory, confirming a completed card or
 bundle selection preview, advancing a mechanical dialogue step, proceeding from a
-room, or taking a single map path. An active Winged Boots charge keeps map travel
+room, or taking a single map path. With **Auto loot treasure chests** on (the
+default), treasure rooms run entirely without a model call: the chest is opened,
+each revealed relic is taken, and the room proceeds. An active Winged Boots charge keeps map travel
 model-controlled so its path-breaking choice is not spent accidentally; an
 exhausted relic does not block the shortcut. Playable cards, usable potions, draws,
 random effects, and unexpected state changes still require a decision.
+
+Normal and fake merchants both open automatically with Jev or the regular
+gameplay model. During fake merchant setup, Buddy waits for the initialized local
+event and its controls before opening the inventory. Purchases remain strategic;
+closing a completed shop proceeds without opening it again.
 
 A rejected selection is returned to the gameplay session so it can re-decide;
 three consecutive validation failures stop play. Mutations are never retried,
@@ -286,7 +370,16 @@ dotnet run --project mod/SpireBuddy.Tests -c Release
 ```
 
 For just the compact card-sequence checks, append `-- --card-choices` to the run
-command. Use `-- --dialogue` for ancient dialogue continuation and settlement.
+command. Use `-- --dialogue` for ancient and Architect dialogue continuation and
+settlement, or `-- --solver` for Combat Solver hand-offs, card choices, and fallbacks.
+Use `-- --jev` for Jev request/response validation, compact state, independent
+credentials, decision routing, solver priority, and stop/steering checks.
+Use `-- --jev-strategy` for ordered reward handling, potion replacement/skip,
+affordable shop choices, updated shop budgets and removal/exit decisions, and
+interruption between replacement steps.
+Use `-- --non-combat` for shared non-combat batches and adapter execution checks.
+Use `-- --merchant` for normal/fake merchant loading and automatic entry with
+Jev and the regular gameplay model, followed by purchases and leaving the shop.
 
 The tests target `net9.0` and need the .NET 9 runtime. They need neither
 Godot nor Python. The suite exercises both model transports with fake HTTP

@@ -18,10 +18,13 @@ internal static class SessionChecks
             await StopDuringCombat(api);
             await Steering(api);
             await ScopeChange(api);
+            await NoOpRecovery(api);
+            await NoOpStop(api);
             await ControlRollover(api);
             await PlayerFacingVoice(api);
             await CustomPersonality(api);
             await SettingsContinuity(api);
+            await RunEndBrief(api);
             await Rollover(api);
             await LocalizedPlay(api);
             await LocalizedToolRounds(api);
@@ -371,6 +374,53 @@ internal static class SessionChecks
         Check(combatCalls == 2 && handler.Commands == 1 && result.Text("status") == "idle", "old decision rejected after guidance changed");
     }
 
+    static async Task RunEndBrief(string api)
+    {
+        // A run ending between chats must reach Buddy as an explicit note plus a
+        // current-state anchor. The anchor is repeated in full even when a
+        // trailing diff already delivered the identical snapshot, so a request
+        // like starting the next character never lands on a bare message with
+        // only stale run discussion behind it.
+        var previousLanguage = L10n.Language;
+        L10n.Language = "en";
+        try
+        {
+            using var handler = new SessionHandler(api) { State = JsonNode.Parse("""{"state_type":"game_over"}""")! };
+            handler.Respond = (body, _) => Task.FromResult(handler.IsBuddy(body) ? handler.Answer("Noted.") : handler.Action(body));
+            using var runtime = await Runtime(handler);
+            await Say(runtime, "hello"); await Wait(runtime);
+
+            runtime.StartGameplay("win this run", "run");
+            var ended = await Wait(runtime);
+            Check(ended.Text("status") == "idle" && handler.Commands == 0, "a run found already over ends without a decision");
+            await Say(runtime, "打骨妹"); await Wait(runtime);
+            var first = handler.History(handler.Requests.Last());
+            Check(first[^1]!.Text("content") == "打骨妹", "user message stays last");
+            Check(first[^2]!.Text("content").StartsWith("Current public game state:") || first[^2]!.Text("content").StartsWith("Public state changes"), "current state accompanies the first message after a run ended");
+            Check(first[^3]!.Text("content").StartsWith("Play update: Run ended.", StringComparison.Ordinal), "run end is briefed as an in-order note");
+
+            // A second run ends with the identical public snapshot: the previous
+            // turn already delivered these exact bytes, so only the play-status
+            // change can force the re-anchor.
+            runtime.StartGameplay("run again", "run");
+            await Wait(runtime);
+            await Say(runtime, "再来一局"); await Wait(runtime);
+            var second = handler.History(handler.Requests.Last());
+            Check(second[^1]!.Text("content") == "再来一局", "user message stays last");
+            Check(second[^2]!.Text("content").StartsWith("Current public game state:") && second[^2]!.Text("content").Contains("game_over"), "unchanged state is re-anchored in full after another run ends");
+            Check(second[^3]!.Text("content").StartsWith("Play update: Run ended.", StringComparison.Ordinal), "second run end is briefed before the re-anchor");
+            Check(second.Count(n => n.Text("role") == "user" && n.Text("content").StartsWith("Play update: ")) == 2, "exactly one note per finished run");
+
+            // With no play-status change, an unchanged state still sends nothing.
+            await Say(runtime, "just chatting"); await Wait(runtime);
+            var third = handler.History(handler.Requests.Last());
+            int Anchors(JsonArray history) => history.Count(n => n.Text("role") == "user" && n.Text("content").StartsWith("Current public game state:"));
+            Check(Anchors(third) == Anchors(second) && third.Count(n => n.Text("role") == "user" && n.Text("content").StartsWith("Play update: ")) == 2, "no play change keeps the no-prefix behavior");
+        }
+        finally { L10n.Language = previousLanguage; }
+        Console.WriteLine($"PASS {api} run-end briefs and state re-anchors reach the chat session");
+    }
+
     static async Task Rollover(string api)
     {
         using var handler = new SessionHandler(api);
@@ -433,6 +483,49 @@ internal static class SessionChecks
         release.SetResult();
         var result = await Wait(runtime);
         Check(handler.Commands == 2 && result["agents"].Text("scope") == "run", "Buddy can expand fight-only play into continuing the run");
+    }
+
+    // A dispatched click the game silently ignores (e.g. a potion reward with
+    // full slots) must come back as a rejected submission the model can
+    // correct, not as a fatal "Game did not settle" stop.
+    static async Task NoOpRecovery(string api)
+    {
+        var rewards = JsonNode.Parse("""{"state_type":"rewards","rewards":{"items":[{"index":0,"type":"potion","potion_name":"Power Potion"},{"index":1,"type":"card"}],"can_proceed":true},"player":{"hp":50,"potions":[{"slot":0,"name":"Speed Potion"}],"max_potion_slots":1}}""")!;
+        using var handler = new SessionHandler(api) { State = rewards.DeepClone() };
+        handler.AfterAction = _ => handler.Commands == 1 ? rewards.DeepClone() : new JsonObject { ["state_type"] = "game_over" };
+        handler.Respond = (body, _) => Task.FromResult(handler.IsBuddy(body) ? handler.Answer("On it.") : handler.Action(body));
+        using var runtime = await Runtime(handler);
+        var previous = BotRuntime.MutationIdleWindow;
+        BotRuntime.MutationIdleWindow = TimeSpan.FromMilliseconds(900);
+        try
+        {
+            runtime.StartGameplay("win this run", "run");
+            var result = await Wait(runtime);
+            Check(handler.Commands == 2, "the ineffective click is followed by a fresh decision");
+            Check(result.Text("status") == "idle" && result["agents"].Text("last_report").Contains("Run ended"), "play continues past a no-op click and ends normally");
+            var corrected = handler.History(handler.Requests.First(r => !handler.IsBuddy(r) && handler.HasResult(handler.History(r))));
+            Check(corrected.WriteString().Contains("no effect"), "the no-op rejection reaches the deciding agent");
+        }
+        finally { BotRuntime.MutationIdleWindow = previous; }
+    }
+
+    // A forced action that never takes effect must stop with a precise report
+    // instead of repeating the same ineffective click forever.
+    static async Task NoOpStop(string api)
+    {
+        using var handler = new SessionHandler(api) { State = SessionHandler.Rewards() };
+        handler.AfterAction = _ => SessionHandler.Rewards();
+        using var runtime = await Runtime(handler);
+        var previous = BotRuntime.MutationIdleWindow;
+        BotRuntime.MutationIdleWindow = TimeSpan.FromMilliseconds(300);
+        try
+        {
+            runtime.StartGameplay("win this run", "run");
+            var result = await Wait(runtime);
+            Check(handler.Commands == 3, "the no-op streak is capped after three ineffective clicks");
+            Check(result.Text("status") == "error" && result["agents"].Text("last_report").Contains("no effect"), "repeated no-ops stop with an explanatory report");
+        }
+        finally { BotRuntime.MutationIdleWindow = previous; }
     }
 
     static async Task ControlRollover(string api)
@@ -674,7 +767,7 @@ internal sealed class SessionHandler(string api) : HttpMessageHandler
         if (State.Text("state_type") == "monster") SawCombatOwner = agents["combat"] != null && agents["game"].Text("status") == "waiting_for_combat";
         State = AfterAction?.Invoke(command) ?? new JsonObject { ["state_type"] = "game_over" };
         return new JsonObject { ["status"] = "ok" };
-    }, (_, _, _, _, _) => new JsonObject(), () => new JsonObject { ["odds"] = new JsonObject { ["chance"] = "40%" } }, op =>
+    }, (_, _, _, _, _, _) => new JsonObject(), () => new JsonObject { ["odds"] = new JsonObject { ["chance"] = "40%" } }, op =>
     {
         SolverOps.Add(op);
         return Solver == null ? new JsonObject { ["available"] = false } : Solver(op);

@@ -37,7 +37,7 @@ internal static partial class GameState
             if (player?["gold"] != null) parts.Add($"Gold {player["gold"]}");
             L("[Run] " + string.Join(" | ", parts));
         }
-        if (state["battle"] is JsonNode battle && kind is "monster" or "elite" or "boss" or "hand_select") Battle(lines, battle);
+        if (state["battle"] is JsonNode battle) Battle(lines, battle);
         Screen(lines, kind, state[kind]);
         if (player is JsonObject po) Player(lines, po, memory, kind != "hand_select");
         if (actions.Count > 0)
@@ -407,7 +407,9 @@ internal static partial class GameState
 
     static string CardText(JsonNode card, bool detail)
     {
-        var cost = card.Text("star_cost").Length > 0 ? card.Text("star_cost") + "*" : card.Text("cost");
+        var cost = card.Text("cost");
+        if (card.Text("star_cost").Length > 0)
+            cost = (cost.Length > 0 ? cost + " energy + " : "") + card.Text("star_cost") + " stars";
         var meta = new List<string>();
         if (cost.Length > 0) meta.Add(cost);
         if (card.Text("type").Length > 0) meta.Add(card.Text("type"));

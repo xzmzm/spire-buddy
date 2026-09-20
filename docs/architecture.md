@@ -8,6 +8,9 @@ commands, and dispatches clicks or game commands on the main thread.
 validates/re-resolves batches, `ModelClient` handles the two API formats, and
 `EnemyDecompiler` reads static assembly source through ILSpy's DLL.
 `BotRuntime` owns lifecycle, settings, session history, operator chat and traces.
+`JevClient` provides an optional TypeSafe choice API for strategic and combat
+decisions; `GameState.Jev` builds its self-contained public brief.
+`JevStrategy` applies reward sequencing and builds potion replacement choices.
 See [the native guide](../mod/README.md) and the executable native tests.
 
 # Architecture
@@ -60,10 +63,21 @@ confirm, proceed and end-turn actions remain terminal.
 The controller handles routine UI transitions locally. It opens a merchant when
 the entry control is available, closes an empty or exhausted inventory, confirms
 a completed card or bundle selection preview, advances a mechanical dialogue
-step, takes a single map path, and proceeds when no strategic choice remains. A
+step, takes a single map path, and proceeds when no strategic choice remains.
+The `auto_treasure` setting (on by default) makes treasure rooms fully
+mechanical: the chest is opened, each revealed relic is claimed in order, and
+the leaving proceed is the already-forced single remaining action; with the
+setting off, treasure relics stay model-owned. A
 map with an active Winged Boots charge stays model-controlled so the agent can
 choose to spend that charge; once the counter is exhausted, the single-path
 shortcut is available again.
+
+Merchant entry is provider-independent, including the fake merchant event. Its
+native binding searches initialized mutable events for the local player's matching
+event; it does not call `LocalMutableEvent`, whose getter indexes a list that may
+still be empty during room asset loading. An absent or stale event produces a
+waiting snapshot with no shop controls, allowing the normal settle loop to wait
+until the merchant can open. Purchases use the same initialized-event lookup.
 
 The model initially receives a compact decision brief, then chooses which details
 to retrieve with read-only function tools. It can inspect state sections,
@@ -93,6 +107,60 @@ current intents, pile contents without order, the visible map and boss, and
 documented enemy move probabilities.
 
 ## Sessions
+
+The independent `use_jev_strategy` and `use_jev_combat` settings replace requests
+to the respective gameplay model with Jev evaluations. The existing gameplay
+holders still retain instructions and receive Buddy's updates, but no model
+history or tool loop is opened for a Jev decision. Combat Solver is checked before
+either combat provider, including combat-owned modal selections. A missing or
+refusing solver falls through to the configured combat provider. Chat always uses
+the normal Buddy session.
+
+With Jev strategy enabled, reward gold, opening card rewards, relic claims, potion
+claims into free slots, and proceeding after completion are local actions in that
+order. Jev still chooses the card (or skip) on the card screen. Full-slot potion
+rewards offer a replacement for each held slot plus a local skip. Skips are tracked
+per run by weakly assigned reward object IDs, so claimed rows may reindex without
+confusing identical potion rewards. Skipped entries are omitted from subsequent
+Jev briefs, and the final proceed leaves them behind. Unrecognized reward types
+remain model-controlled. Other gameplay providers keep their existing behavior.
+
+Shop briefs and options filter sold items and prices above current gold before
+building the keyword glossary. Full-slot purchases become replacement choices;
+the ordinary purchase and standalone discard are withheld from Jev. Replacement
+choices contain controller-owned discard and take steps. Only the real commands
+reach the adapter, with its usual final freshness/cancellation checks for each.
+After the discard settles, the controller verifies the remaining player state,
+run, item identity and price, then re-resolves the claim/purchase against the fresh
+legal actions. Uncertain outcomes stop play without a retry. A definitive change
+ends the compound operation and returns to the normal fresh-decision loop.
+
+Shop decisions use a dedicated question from `JevStrategy.Options`, starting with
+the current gold balance. It compares purchases and removal as parts of a possible
+sequence, alongside saving for a concrete need. Each purchase criterion includes
+its remaining budget; removal and exiting have explicit descriptions. This replaces
+the generic strategy question for shops, avoiding irrelevant reward instructions
+and keeping one choice request per decision. Combat and other strategy screens
+keep their own instructions. Action IDs and commands are unchanged.
+
+Jev sends `state`, `model`, and typed `choice` questions to the exact configured
+`jev_endpoint`, authenticated solely by `jev_api_key`. Every action ID maps to a
+locally enumerated command. Groups contain at most 255 options, with a final
+comparison when multiple groups are needed. Responses are validated against the
+group's option set and converted into a decision bound locally to
+the original snapshot. The common execution loop then performs freshness,
+guidance, cancellation and action validation. Malformed answers never execute.
+
+The Jev brief uses no history-dependent omissions. Unique held-card rules, public
+enemy/orb/pet effects, upgrade previews and reachable visible map topology supplement
+the existing compact renderer. Criteria carry the legal choices once; the brief
+omits its action list. Only four recent action summaries and the last definitive
+failure feedback accompany current state. The existing context setting bounds
+the UTF-8 token estimate of the entire request. HTTP 429/529 evaluations retry at
+most twice with backoff (or bounded Retry-After); game mutations are never retried.
+`jev_response` traces contain selected IDs and usage, without credentials or full
+payloads. Jev and Buddy credentials are independently persisted, masked, and
+omitted from status responses.
 
 `BotRuntime` has three agent roles with independently bounded sessions:
 
@@ -146,6 +214,18 @@ Ancient-event snapshots include the current dialogue line's position: the body,
 options and enabled hitbox can remain identical across consecutive lines. This
 lets each dialogue advance settle on observed progress before the next automatic
 click, without relying on animation frames or reading upcoming dialogue.
+Event options also report their text key: multi-line events such as The Architect
+regenerate an identical-looking single option for every dialogue line (same title,
+description and flags, even for the final run-winning choice), and the key carries
+the line position so each consumed click settles the same way.
+A settle wait that ends with the screen still interactive and byte-identical to
+the pre-click snapshot is a silent no-op click - the game accepted the input but
+refused its effect, e.g. a potion reward with full potion slots, whose button
+stays enabled. The mutation itself is still never retried; the action comes back
+as a rejected submission (`executed=false`, unchanged snapshot) and the model
+re-decides. Claiming a potion reward with full slots is rejected up front with
+the same recovery. Three consecutive ineffective clicks on one snapshot stop
+play with an explicit report instead of looping.
 A queued operation that is cancelled, times out, or sees a changed snapshot is
 rejected without retrying the mutation.
 
@@ -182,6 +262,13 @@ smaller, it sends the full state. Unchanged deck or relic data is not repeatedly
 prefixed to follow-up questions. State is filtered through the same information
 firewall used by gameplay. Tool rounds refresh the diff baseline as well, so a
 change back to an earlier value is reported correctly after an inspection.
+
+When play ends between turns, the final report is queued as a `Play update` note
+and delivered in conversation order on the next user message, and any
+play-status change (start, stop, run end) re-anchors the session by resending
+the full state even when the raw snapshot is unchanged. A request that arrives
+right after a finished run therefore always sees both the end-of-run brief and
+the current menu picture, never a bare message over stale run discussion.
 
 A literal `stop` is handled immediately without a model request, cancelling gameplay
 reasoning and queued actions while retaining Buddy's conversation. A control epoch

@@ -6,6 +6,10 @@ directly to a configured OpenAI-compatible endpoint, validates every game action
 and performs enemy decompilation in process. No companion service or browser
 dashboard is required.
 
+Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API for
+run strategy, combat, or both, with a separate endpoint, model and API key.
+Settings are grouped into sections that start collapsed.
+
 ## Install
 
 Prerequisites are a working Slay the Spire 2 mod-loader installation and the

@@ -26,8 +26,10 @@ public static class Mod
     private static string? FontLanguage;
     private static bool UiChinese;
     private static LineEdit Message = null!, Endpoint = null!, Model = null!, Key = null!;
+    private static LineEdit JevEndpoint = null!, JevModel = null!, JevKey = null!;
     private static SpinBox MaxTokens = null!;
-    private static CheckButton UseCombatSolver = null!, HideCombatSolverUi = null!;
+    private static CheckButton UseCombatSolver = null!, HideCombatSolverUi = null!, AutoTreasure = null!;
+    private static CheckButton UseJevStrategy = null!, UseJevCombat = null!;
     private static Label SolverHint = null!;
     private static bool SolverAvailable, HideSolverOverlay;
     private static ulong NextSolverProbe;
@@ -35,8 +37,8 @@ public static class Mod
     private static VBoxContainer CustomPersonalityFields = null!;
     private static TextEdit CustomPersonality = null!;
     private static MenuButton ModelPicker = null!;
-    private static Button Test = null!;
-    private static bool Probing;
+    private static Button Test = null!, TestJev = null!;
+    private static bool Probing, ProbingJev;
     private static Button Save = null!, SendButton = null!, ResizeHandle = null!;
     private static bool Connected, Built, Polling, Busy, InitializedSettings, Alive, Dragging, Resizing;
     private static Vector2 DragOffset, ResizeStartMouse, ResizeStartSize, ExpandedSize;
@@ -51,7 +53,7 @@ public static class Mod
     private static readonly Dictionary<string, Label> Pending = new();
     private static string Conversation = "";
     private const string MaskedKey = BotRuntime.MaskedKey;
-    private static bool KeyTouched;
+    private static bool KeyTouched, JevKeyTouched;
     private static ulong NoticeHideAt;
 
     public static void Initialize()
@@ -77,7 +79,7 @@ public static class Mod
             new ScheduledGameAdapter(Main.Enqueue,
                 () => JsonSerializer.SerializeToNode(GameBindings.ReadState())!,
                 command => JsonSerializer.SerializeToNode(GameBindings.Execute(command))!,
-                (query, itemType, rarity, offset, count) => JsonSerializer.SerializeToNode(GameBindings.SearchWiki(query, itemType, rarity, offset, count))!,
+                (query, itemType, rarity, character, offset, count) => JsonSerializer.SerializeToNode(GameBindings.SearchWiki(query, itemType, rarity, character, offset, count))!,
                 () => JsonSerializer.SerializeToNode(GameBindings.ReadKnowledge())!,
                 op => JsonSerializer.SerializeToNode(CombatSolverBridge.Dispatch(op))!));
     }
@@ -112,7 +114,7 @@ public static class Mod
                 Polling = false; NextPoll = Time.GetTicksMsec() + 400;
                 Connected = value != null;
                 if (value != null) Render(value);
-                else { Activity.Visible = false; Status.Text = L10n.T("Offline", "离线"); Save.Disabled = SendButton.Disabled = Test.Disabled = ModelPicker.Disabled = true; }
+                else { Activity.Visible = false; Status.Text = L10n.T("Offline", "离线"); Save.Disabled = SendButton.Disabled = Test.Disabled = TestJev.Disabled = ModelPicker.Disabled = true; }
             });
         }
     }
@@ -293,10 +295,11 @@ public static class Mod
         settingsTab.AddChild(settingsScroll);
         var settings = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill }; settings.AddThemeConstantOverride("separation", 10); settingsScroll.AddChild(settings);
         Wrapped(settings, L10n.T("Make Buddy yours. Stop before saving changes.", "打造你的 Buddy。保存前请先停止游玩。"));
-        Personality = Options(settings, L10n.T("Personality", "性格"), Personalities.Ids, Personalities.Label);
+        var voice = SettingsGroup(settings, L10n.T("Buddy's personality", "Buddy 的性格"));
+        Personality = Options(voice, L10n.T("Personality", "性格"), Personalities.Ids, Personalities.Label);
         CustomPersonalityFields = new VBoxContainer { Visible = false };
         CustomPersonalityFields.AddThemeConstantOverride("separation", 10);
-        settings.AddChild(CustomPersonalityFields);
+        voice.AddChild(CustomPersonalityFields);
         Label(CustomPersonalityFields, L10n.T("Your personality", "你的自定义性格"));
         CustomPersonality = new TextEdit
         {
@@ -312,31 +315,54 @@ public static class Mod
             "描述你希望 Buddy 如何说话。修改示例，打造你的专属性格；留空则使用示例。"))
             .AddThemeFontSizeOverride("font_size", 14);
         Personality.ItemSelected += _ => CustomPersonalityFields.Visible = Selected(Personality) == "custom";
-        Endpoint = Input(settings, L10n.T("API endpoint", "API 端点"), "https://api.openai.com/v1");
-        Key = Input(settings, L10n.T("API key", "API 密钥"), ""); Key.Secret = true; Key.SecretCharacter = "*"; Key.PlaceholderText = L10n.T("Enter API key", "输入 API 密钥");
+        var chatModel = SettingsGroup(settings, L10n.T("Buddy model & connection", "Buddy 模型与连接"));
+        Wrapped(chatModel, L10n.T("Used for chat and any decisions not assigned to Jev or Combat Solver.", "用于聊天，以及未交给 Jev 或战斗路线求解器的决策。"));
+        Endpoint = Input(chatModel, L10n.T("API endpoint", "API 端点"), "https://api.openai.com/v1");
+        Key = Input(chatModel, L10n.T("API key", "API 密钥"), ""); Key.Secret = true; Key.SecretCharacter = "*"; Key.PlaceholderText = L10n.T("Enter API key", "输入 API 密钥");
         Key.TextChanged += _ => KeyTouched = true;
-        Wrapped(settings, L10n.T("The key is stored with the game's user data and kept across restarts.", "密钥保存在游戏用户数据中，重启后依然有效。")).AddThemeFontSizeOverride("font_size", 14);
-        Api = Options(settings, L10n.T("API format", "API 格式"), ["responses", "chat_completions"]);
-        Label(settings, L10n.T("AI model · select or enter a custom ID", "AI 模型 · 从列表选择或输入自定义 ID"));
-        var modelRow = new HBoxContainer(); settings.AddChild(modelRow);
+        Wrapped(chatModel, L10n.T("The key is stored with the game's user data and kept across restarts.", "密钥保存在游戏用户数据中，重启后依然有效。")).AddThemeFontSizeOverride("font_size", 14);
+        Api = Options(chatModel, L10n.T("API format", "API 格式"), ["responses", "chat_completions"]);
+        Label(chatModel, L10n.T("AI model · select or enter a custom ID", "AI 模型 · 从列表选择或输入自定义 ID"));
+        var modelRow = new HBoxContainer(); chatModel.AddChild(modelRow);
         Model = new LineEdit { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, PlaceholderText = L10n.T("Model ID", "模型 ID") }; modelRow.AddChild(Model);
         ModelPicker = new MenuButton { Text = "▾", TooltipText = L10n.T("Load models using the endpoint and API key above", "使用上面的端点和 API 密钥加载模型列表") }; modelRow.AddChild(ModelPicker);
         ModelPicker.AboutToPopup += LoadModels;
         ModelPicker.GetPopup().IdPressed += id => Model.Text = ModelPicker.GetPopup().GetItemText((int)id);
-        Effort = Options(settings, L10n.T("Reasoning effort", "推理力度"), ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
-        Label(settings, L10n.T("Max context tokens", "最大上下文 token 数"));
-        MaxTokens = new SpinBox { MinValue = 1, MaxValue = 100000000, Step = 1, Value = 250000 }; settings.AddChild(MaxTokens);
-        Wrapped(settings, L10n.T("Starts a fresh session at this limit, keeping current game state and chat history that fits.", "达到该上限时会开启新会话，并保留当前游戏状态和能放下的聊天记录。"));
-        UseCombatSolver = new CheckButton { Text = L10n.T("Use Combat Solver to auto fight", "使用战斗路线求解器自动战斗") }; settings.AddChild(UseCombatSolver);
-        SolverHint = Wrapped(settings, ""); SolverHint.AddThemeFontSizeOverride("font_size", 14);
-        HideCombatSolverUi = new CheckButton { Text = L10n.T("Hide Combat Solver UI during combat", "战斗中隐藏战斗路线求解器界面") }; settings.AddChild(HideCombatSolverUi);
-        Wrapped(settings, L10n.T("The Combat Solver overlay normally appears during combat; this keeps it hidden.", "战斗路线求解器的界面通常会在战斗中出现；开启后保持隐藏。")).AddThemeFontSizeOverride("font_size", 14);
+        Effort = Options(chatModel, L10n.T("Reasoning effort", "推理力度"), ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+        Test = Button(chatModel, L10n.T("Test Buddy connection", "测试 Buddy 连接"), TestSettings);
+
+        var jev = SettingsGroup(settings, L10n.T("Jev decisions", "Jev 决策"));
+        UseJevStrategy = new CheckButton { Text = L10n.T("Use Jev for strategy", "使用 Jev 进行策略决策") }; jev.AddChild(UseJevStrategy);
+        Wrapped(jev, L10n.T("Choose paths, rewards, events, shops and other campaign decisions with Jev.", "由 Jev 选择路线、奖励、事件、商店选项及其他战役决策。"));
+        UseJevCombat = new CheckButton { Text = L10n.T("Use Jev for combat", "使用 Jev 进行战斗决策") }; jev.AddChild(UseJevCombat);
+        Wrapped(jev, L10n.T("Combat Solver takes priority when enabled. Jev handles fights and card choices when the solver is off or unavailable.", "启用时优先使用战斗路线求解器。求解器关闭或不可用时，由 Jev 处理战斗和选牌。"));
+        JevEndpoint = Input(jev, L10n.T("Jev evaluation URL", "Jev 评估 URL"), JevClient.DefaultEndpoint);
+        Wrapped(jev, L10n.T("Full URL, including /v1/systemone for TypeSafe. Custom compatible endpoints are supported.", "填写完整 URL；TypeSafe 需包含 /v1/systemone，也可使用兼容的自定义端点。"));
+        JevModel = Input(jev, L10n.T("Jev model", "Jev 模型"), JevClient.DefaultModel);
+        JevKey = Input(jev, L10n.T("Jev API key", "Jev API 密钥"), ""); JevKey.Secret = true; JevKey.SecretCharacter = "*";
+        JevKey.PlaceholderText = L10n.T("Enter Jev API key", "输入 Jev API 密钥");
+        JevKey.TextChanged += _ => JevKeyTouched = true;
+        Wrapped(jev, L10n.T("Stored separately from Buddy's key. Each decision sends a compact current state and legal choices.", "与 Buddy 的密钥分开保存。每次决策发送精简的当前状态和合法选项。"));
+        TestJev = Button(jev, L10n.T("Test Jev connection", "测试 Jev 连接"), TestJevSettings);
+
+        var automation = SettingsGroup(settings, L10n.T("Gameplay automation", "游玩自动化"));
+        UseCombatSolver = new CheckButton { Text = L10n.T("Use Combat Solver", "使用战斗路线求解器") }; automation.AddChild(UseCombatSolver);
+        SolverHint = Wrapped(automation, ""); SolverHint.AddThemeFontSizeOverride("font_size", 14);
+        HideCombatSolverUi = new CheckButton { Text = L10n.T("Hide Combat Solver UI", "隐藏战斗路线求解器界面") }; automation.AddChild(HideCombatSolverUi);
+        Wrapped(automation, L10n.T("The Combat Solver overlay normally appears during combat; this keeps it hidden.", "战斗路线求解器的界面通常会在战斗中出现；开启后保持隐藏。")).AddThemeFontSizeOverride("font_size", 14);
+        AutoTreasure = new CheckButton { Text = L10n.T("Auto loot treasure chests", "自动搜刮宝箱") }; automation.AddChild(AutoTreasure);
+        Wrapped(automation, L10n.T(
+            "Buddy opens chests, takes the relic and moves on without asking.",
+            "Buddy 会自动打开宝箱、拿走遗物并继续前进，无需确认。")).AddThemeFontSizeOverride("font_size", 14);
+        var context = SettingsGroup(settings, L10n.T("Context limit", "上下文限制"));
+        Label(context, L10n.T("Max context tokens", "最大上下文 token 数"));
+        MaxTokens = new SpinBox { MinValue = 1, MaxValue = 100000000, Step = 1, Value = 250000 }; context.AddChild(MaxTokens);
+        Wrapped(context, L10n.T("Buddy starts a fresh session at this limit. Jev checks each complete state and choices against the same limit.", "Buddy 达到上限时开启新会话。Jev 的每份完整状态和选项也受此上限限制。"));
         // Keep actions at their natural height at the bottom while the form
         // takes the remaining space and scrolls when the window is smaller.
         var settingsActions = new VBoxContainer();
         settingsActions.AddThemeConstantOverride("separation", 10);
         settingsTab.AddChild(settingsActions);
-        Test = Button(settingsActions, L10n.T("Test connection", "测试连接"), TestSettings);
         Save = Button(settingsActions, L10n.T("Save settings", "保存设置"), SaveSettings);
         Notice = Wrapped(Body, ""); Notice.AddThemeFontSizeOverride("font_size", 14); Notice.Visible = false;
         NoticeHideAt = 0;
@@ -474,6 +500,8 @@ public static class Mod
         var draft = InitializedSettings ? SettingsPayload() : null;
         var keyText = Key.Text;
         var keyTouched = KeyTouched;
+        var jevKeyText = JevKey.Text;
+        var jevKeyTouched = JevKeyTouched;
         var customText = CustomPersonality.Text == CustomPersonality.PlaceholderText ? null : CustomPersonality.Text;
         // Free the old layer and rebuild every control in the new language.
         // Resetting the render markers lets the next status poll replay chat
@@ -491,6 +519,8 @@ public static class Mod
             if (customText != null) CustomPersonality.Text = customText;
             Key.Text = keyText;
             KeyTouched = keyTouched;
+            JevKey.Text = jevKeyText;
+            JevKeyTouched = jevKeyTouched;
         }
     }
 
@@ -567,6 +597,17 @@ public static class Mod
     }
     private static Button Button(Node parent, string text, Action action)
     { var n = new Button { Text = text }; n.Pressed += action; parent.AddChild(n); return n; }
+    private static VBoxContainer SettingsGroup(Node parent, string title)
+    {
+        var section = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        parent.AddChild(section);
+        var toggle = new Button { Text = "▸ " + title, ToggleMode = true, Alignment = HorizontalAlignment.Left };
+        section.AddChild(toggle);
+        var fields = new VBoxContainer { Visible = false, SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        fields.AddThemeConstantOverride("separation", 10); section.AddChild(fields);
+        toggle.Toggled += expanded => { fields.Visible = expanded; toggle.Text = (expanded ? "▾ " : "▸ ") + title; };
+        return fields;
+    }
     private static LineEdit Input(Node parent, string label, string text)
     { Label(parent, label); var n = new LineEdit { Text = text }; parent.AddChild(n); return n; }
     private static OptionButton Options(Node parent, string label, string[] values, Func<string, string>? display = null)
@@ -588,9 +629,15 @@ public static class Mod
         if (Key.Text.Length > 0 && Key.Text != MaskedKey) payload["api_key"] = Key.Text;
         payload["use_combat_solver"] = UseCombatSolver.ButtonPressed;
         payload["hide_combat_solver_ui"] = HideCombatSolverUi.ButtonPressed;
+        payload["auto_treasure"] = AutoTreasure.ButtonPressed;
+        payload["use_jev_strategy"] = UseJevStrategy.ButtonPressed;
+        payload["use_jev_combat"] = UseJevCombat.ButtonPressed;
+        payload["jev_endpoint"] = JevEndpoint.Text;
+        payload["jev_model"] = JevModel.Text;
+        if (JevKey.Text.Length > 0 && JevKey.Text != MaskedKey) payload["jev_api_key"] = JevKey.Text;
         return payload;
     }
-    private static void SaveSettings() => Send("/settings", SettingsPayload(), () => { Key.Text = ""; KeyTouched = false; }, "PUT", L10n.T("Settings saved", "设置已保存"));
+    private static void SaveSettings() => Send("/settings", SettingsPayload(), () => { Key.Text = JevKey.Text = ""; KeyTouched = JevKeyTouched = false; }, "PUT", L10n.T("Settings saved", "设置已保存"));
 
     private static void PopulateSettings(JsonNode config)
     {
@@ -603,6 +650,12 @@ public static class Mod
         Select(Effort, config["reasoning_effort"]?.ToString() ?? "default");
         UseCombatSolver.ButtonPressed = config.Flag("use_combat_solver");
         HideCombatSolverUi.ButtonPressed = config.Flag("hide_combat_solver_ui");
+        // Older saved settings predate the key; the shipped default is on.
+        AutoTreasure.ButtonPressed = config.Flag("auto_treasure", true);
+        UseJevStrategy.ButtonPressed = config.Flag("use_jev_strategy");
+        UseJevCombat.ButtonPressed = config.Flag("use_jev_combat");
+        JevEndpoint.Text = config.Text("jev_endpoint", JevClient.DefaultEndpoint);
+        JevModel.Text = config.Text("jev_model", JevClient.DefaultModel);
         InitializedSettings = true;
     }
 
@@ -614,6 +667,17 @@ public static class Mod
         _ = Request("POST", "/settings/test", SettingsPayload(), value =>
         {
             Probing = false; Test.Disabled = !Connected;
+            if (value != null) ShowNotice(value["message"]!.ToString());
+        });
+    }
+    private static void TestJevSettings()
+    {
+        if (ProbingJev) return;
+        ProbingJev = true; TestJev.Disabled = true;
+        ShowNotice(L10n.T("Testing Jev connection…", "正在测试 Jev 连接…"));
+        _ = Request("POST", "/settings/test-jev", SettingsPayload(), value =>
+        {
+            ProbingJev = false; TestJev.Disabled = !Connected;
             if (value != null) ShowNotice(value["message"]!.ToString());
         });
     }
@@ -682,7 +746,7 @@ public static class Mod
         Status.Text = status == "running" ? L10n.T("● Playing", "● 游玩中") : status == "stopping" ? L10n.T("Stopping…", "正在停止…") : chatting ? L10n.T("● Thinking", "● 思考中") : status == "error" ? L10n.T("● Needs attention", "● 需要注意") : L10n.T("● Ready", "● 就绪");
         Alive = data["thread_alive"]?.GetValue<bool>() == true;
         HideSolverOverlay = data["config"]?.Flag("hide_combat_solver_ui") ?? false;
-        Test.Disabled = Probing; ModelPicker.Disabled = false;
+        Test.Disabled = Probing; TestJev.Disabled = ProbingJev; ModelPicker.Disabled = false;
         Save.Disabled = Alive || chatting || Busy; SendButton.Disabled = Busy;
         if (!InitializedSettings && data["config"] is JsonNode config)
             PopulateSettings(config);
@@ -690,6 +754,8 @@ public static class Mod
         // text. Refill only while the user has not edited the field.
         if (!KeyTouched && Key.Text.Length == 0 && data["config"]?["has_api_key"]?.GetValue<bool>() == true)
             Key.Text = MaskedKey;
+        if (!JevKeyTouched && JevKey.Text.Length == 0 && data["config"]?.Flag("has_jev_api_key") == true)
+            JevKey.Text = MaskedKey;
         string conversation = data["conversation_id"]?.ToString() ?? "legacy";
         if (Conversation != conversation)
         {

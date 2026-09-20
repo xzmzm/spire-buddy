@@ -12,7 +12,7 @@ internal static class BriefChecks
             var directory = Path.Combine(Path.GetTempPath(), "spire-brief-" + Guid.NewGuid().ToString("N"));
             var game = new ScheduledGameAdapter(a => a(), handler.State,
                 _ => { handler.Step++; return new JsonObject { ["status"] = "ok" }; },
-                (_, _, _, _, _) => new JsonObject());
+                (_, _, _, _, _, _) => new JsonObject());
             using var runtime = new BotRuntime(directory, "missing.dll", game, handler);
             await runtime.Dispatch("PUT", "/settings", new JsonObject
             {

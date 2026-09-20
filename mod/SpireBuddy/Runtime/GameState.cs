@@ -153,7 +153,7 @@ internal static partial class GameState
     /// Returns a non-strategic action that the controller can execute without a
     /// model round trip. Optional potion discards never make a screen strategic.
     /// </summary>
-    internal static JsonNode? ForcedAction(JsonNode state, JsonArray actions, bool merchantOpened = false)
+    internal static JsonNode? ForcedAction(JsonNode state, JsonArray actions, bool merchantOpened = false, bool autoTreasure = false)
     {
         if (actions.Count == 0) return null;
 
@@ -176,11 +176,21 @@ internal static partial class GameState
             // loop by the same routine-action path. After the inventory has been
             // opened once, proceed when it is already closed instead of reopening
             // the merchant indefinitely.
-            if (!Has("shop_purchase"))
+            if (!Has("shop_purchase") && !Has("replace_potion"))
             {
                 if (First("close_shop") is JsonNode close) return close;
                 if (merchantOpened && First("proceed") is JsonNode proceed) return proceed;
             }
+        }
+
+        // With the auto-treasure setting on, the whole room is mechanical: open
+        // the chest, then take each revealed relic in order. The leaving proceed
+        // is already forced as the single remaining action once the relics are
+        // gone. A skipped chest (the setting off) stays fully model-owned.
+        if (autoTreasure && kind == "treasure")
+        {
+            if (First("open_chest") is JsonNode open) return open;
+            if (First("claim_treasure_relic") is JsonNode claim) return claim;
         }
 
         // A completed selection preview (card transform/upgrade/removal, bundle)
@@ -202,7 +212,7 @@ internal static partial class GameState
                 return nonDiscard[0];
             if (kind == "map" && name == "choose_map_node")
                 return nonDiscard[0];
-            if (actions.Count == 1 && kind is not ("monster" or "elite" or "boss" or "hand_select") && name is not ("shop_purchase" or "claim_reward" or "select_card_reward" or "claim_treasure_relic" or "select_relic"))
+            if (actions.Count == 1 && kind is not ("monster" or "elite" or "boss" or "hand_select") && name is not ("shop_purchase" or "replace_potion" or "claim_reward" or "select_card_reward" or "claim_treasure_relic" or "select_relic"))
                 return nonDiscard[0];
         }
 

@@ -129,7 +129,7 @@ internal static class NonCombatBatchChecks
             else state = JsonNode.Parse("""{"state_type":"game_over"}""")!;
             commands++;
             return new JsonObject { ["status"] = "ok" };
-        }, (_, _, _, _, _) => new JsonObject());
+        }, (_, _, _, _, _, _) => new JsonObject());
         using var runtime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire-batch-" + Guid.NewGuid().ToString("N")), "missing.dll", game, handler);
         await runtime.Dispatch("PUT", "/settings", new JsonObject { ["api_endpoint"] = "http://model/v1", ["model"] = "test", ["api_type"] = api });
         runtime.StartGameplay("Finish the chosen sequence.", "run");

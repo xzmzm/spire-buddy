@@ -8,12 +8,119 @@ internal static class SolverChecks
     internal static async Task Run()
     {
         await SettingsRoundTrip();
+        await SolverOwnsCombatChoices();
+        await NonCombatChoicesStayWithBuddy();
+        await CombatChoiceFallsBack();
         await SolverPlaysTheFight();
         await MissingSolverFallsBack();
         await DisabledSolverRetriesNextFight();
         await FailedTakeOverFallsBack();
         await TransientFramesDoNotEndTheFight();
         Console.WriteLine("PASS Combat Solver settings, delegation, and fallbacks");
+    }
+
+    static async Task SolverOwnsCombatChoices()
+    {
+        foreach (var scope in new[] { "run", "fight" })
+        foreach (var alreadyArmed in new[] { false, true })
+        {
+            // Choices Paradox replaces the combat screen before the first
+            // playable turn. A model pick would invalidate the solver's route.
+            using var handler = new SessionHandler("responses")
+            {
+                State = scope == "run" ? SessionHandler.Map() : CardChoice(true)
+            };
+            int modelChoices = 0, polls = 0;
+            bool fullAuto = alreadyArmed;
+            string? firstSolverScreen = null;
+            handler.AfterAction = command => command.Text("action") switch
+            {
+                "choose_map_node" => CardChoice(true),
+                "select_card" => UnexpectedModelChoice(),
+                _ => new JsonObject { ["state_type"] = "game_over" }
+            };
+            handler.Respond = (body, _) => Task.FromResult(handler.Action(body));
+            handler.Solver = op =>
+            {
+                firstSolverScreen ??= handler.State.Text("state_type");
+                if (op is "enable" or "disable")
+                {
+                    fullAuto = op == "enable";
+                    return new JsonObject { ["available"] = true, ["enabled"] = fullAuto };
+                }
+                // The solver chooses the opening card, plays, handles another
+                // choice during combat, and finally reaches rewards.
+                if (fullAuto)
+                    handler.State = ++polls switch
+                    {
+                        1 => handler.State,
+                        2 or 4 => SessionHandler.Combat(),
+                        3 => CardChoice(true),
+                        _ => SessionHandler.Rewards()
+                    };
+                return new JsonObject
+                {
+                    ["available"] = true, ["full_auto"] = fullAuto,
+                    ["combat"] = handler.State.Flag("in_combat") || GameState.Combat(handler.State)
+                };
+            };
+            using var runtime = await Runtime(handler, new JsonObject { ["use_combat_solver"] = true });
+            runtime.StartGameplay("continue", scope);
+            var result = await Wait(runtime);
+            Check(result.Text("status") == "idle", "a fight can start at the combat card-choice screen");
+            Check(modelChoices == 0 && firstSolverScreen == "card_select", "the solver owns the opening card choice before any model pick");
+            Check(handler.Requests.Count == (scope == "run" ? 1 : 0), "combat choices never open a model decision while the solver plays");
+            Check(handler.Commands == (scope == "run" ? 2 : 0), "only map and rewards actions surround a solver-owned fight");
+            Check(handler.SolverOps.Count(op => op == "enable") == (alreadyArmed ? 0 : 1), "card choices preserve an active solver route without re-arming");
+            Check(handler.SolverOps.Count(op => op == "disable") == 1, "the solver is disarmed only after the whole fight");
+
+            JsonNode UnexpectedModelChoice() { modelChoices++; return SessionHandler.Combat(); }
+        }
+        Console.WriteLine("PASS Combat Solver owns opening and mid-fight card choices in run and fight scopes");
+    }
+
+    static JsonNode CardChoice(bool inCombat)
+    {
+        var state = JsonNode.Parse("""{"state_type":"card_select","card_select":{"screen_type":"choose","cards":[{"index":0,"name":"Sculpting Strike"},{"index":1,"name":"Pagestorm"},{"index":2,"name":"Devour Life"},{"index":3,"name":"High Five"},{"index":4,"name":"Necro Mastery"}]},"player":{"hp":50,"potions":[]}}""")!;
+        state["in_combat"] = inCombat;
+        if (inCombat)
+            state["battle"] = JsonNode.Parse("""{"round":1,"turn":"player","is_play_phase":false,"actions_pending":true,"enemies":[{"entity_id":"boss","name":"Test Boss","hp":100,"max_hp":100}]}""");
+        return state;
+    }
+
+    static async Task NonCombatChoicesStayWithBuddy()
+    {
+        using var handler = new SessionHandler("responses") { State = CardChoice(false) };
+        handler.Respond = (body, _) => Task.FromResult(handler.Action(body));
+        handler.Solver = _ => new JsonObject { ["available"] = true, ["combat"] = false };
+        using var runtime = await Runtime(handler, new JsonObject { ["use_combat_solver"] = true });
+        runtime.StartGameplay("continue", "run");
+        var result = await Wait(runtime);
+        Check(result.Text("status") == "idle" && handler.Commands == 1, "a non-combat card choice still plays normally");
+        Check(handler.SolverOps.Count == 0, "non-combat choices are never handed to the solver");
+        Check(handler.Requests.Count == 1 && handler.Requests[0].Text("prompt_cache_key").StartsWith("game-"), "the run session owns non-combat choices");
+    }
+
+    static async Task CombatChoiceFallsBack()
+    {
+        foreach (var useSolver in new[] { false, true })
+        {
+            using var handler = new SessionHandler("responses") { State = CardChoice(true) };
+            Check(GameState.Ready(handler.State), "combat setup choices remain actionable while the turn-start action is pending");
+            handler.Respond = (body, _) => Task.FromResult(handler.Action(body));
+            handler.AfterAction = _ => handler.Commands == 1 ? SessionHandler.Combat() : SessionHandler.Rewards();
+            handler.Solver = _ => new JsonObject { ["available"] = false };
+            using var runtime = await Runtime(handler, new JsonObject { ["use_combat_solver"] = useSolver });
+            runtime.StartGameplay("win this fight", "fight");
+            var result = await Wait(runtime);
+            Check(result.Text("status") == "idle" && handler.Commands == 2, "Buddy can finish a fight that starts with a card choice without the solver");
+            Check(handler.Requests.Count == 2 && handler.Requests.All(r => r.Text("prompt_cache_key").StartsWith("combat-")), "the combat session owns the fallback choice and subsequent play");
+            Check(handler.Requests.Select(r => r.Text("prompt_cache_key")).Distinct().Count() == 1, "the card choice and play share the same combat context");
+            var brief = handler.History(handler.Requests[0]).Last(n => n.Text("role") == "user")!.Text("content");
+            Check(brief.Contains("[Enemy boss] Test Boss 100/100") && brief.Contains("Pagestorm"), "fallback choice decisions include the battle and the offered cards");
+            Check(handler.State.Text("state_type") == "rewards", "fight-only play stops before rewards after resolving its choice");
+        }
+        Console.WriteLine("PASS combat card-choice fallbacks and non-combat choice routing");
     }
 
     static async Task SettingsRoundTrip()
