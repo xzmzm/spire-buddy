@@ -47,7 +47,7 @@ internal static partial class GameBindings
 
     private static string? SafeGetCardDescription(CardModel card, PileType pile = PileType.Hand)
     {
-        try { return StripRichTextTags(card.GetDescriptionForPile(pile)).Replace("\n", " "); }
+        try { return WithFreshCardPreview(card, null, () => StripRichTextTags(card.GetDescriptionForPile(pile)).Replace("\n", " ")); }
         catch { return SafeGetText(() => card.Description)?.Replace("\n", " "); }
     }
 

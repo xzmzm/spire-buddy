@@ -2,6 +2,7 @@
 runs/
 .env
 .zcode/
+.obs-venv/
 
 mod/**/bin/
 mod/**/obj/

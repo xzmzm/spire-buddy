@@ -60,6 +60,32 @@ gameplay commentary render as Markdown in the panel. The panel UI follows the
 game's language — Chinese when the game runs in Chinese, English otherwise —
 and **stop** (or **停**) cancels play.
 
+## Stop an OBS recording with Buddy (optional)
+
+The [OBS watcher](scripts/stop-obs-with-buddy.py) stops an **already running**
+recording when Buddy is stopped by the player, finishes a fight/run, or exits
+with an API/gameplay error. It also stops after a hard time limit, covering an
+API request that never returns. It does not start OBS or recording. If the game
+crashes without writing an end marker, the time limit still applies.
+
+In OBS, enable **Tools → obs-websocket Settings → Enable WebSocket server** and
+leave authentication on. The script reads the local OBS configuration for the
+port and password; it never prints or copies the password. Install the Python
+client in a virtual environment, then start recording in OBS and run (macOS/Linux):
+
+```sh
+python3 -m venv .obs-venv
+.obs-venv/bin/python -m pip install websocket-client
+.obs-venv/bin/python scripts/stop-obs-with-buddy.py --max-minutes 120
+```
+
+Run the watcher before or during Buddy's play. It exits after stopping the
+recording; run it again for a new recording. `Ctrl-C` cancels only the watcher,
+not OBS. For a nonstandard Godot data directory, pass `--traces PATH`; for a
+nonstandard OBS configuration, pass `--obs-config PATH`. Existing recordings
+remain under OBS's normal output settings. The watcher is opt-in so unrelated
+OBS recordings are never stopped automatically.
+
 See [the mod guide](mod/README.md) for configuration, controls, safety,
 installation paths, and verification. The implementation overview is in
 [docs/architecture.md](docs/architecture.md).

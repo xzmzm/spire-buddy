@@ -25,20 +25,35 @@ internal static class JevStrategyChecks
         var data = JsonNode.Parse("""{"can_close":true,"inventory_open":true,"items":[{"index":0,"category":"potion","potion_id":"NEW","potion_name":"New Potion","potion_description":"Gain strength.","price":50,"is_stocked":true,"can_afford":true},{"index":1,"category":"card","card_name":"Cheap Card","price":30,"is_stocked":true,"can_afford":true},{"index":2,"category":"relic","relic_name":"Too Expensive","price":61,"is_stocked":true,"can_afford":true,"keywords":[{"name":"OmittedRule","description":"Unused."}]},{"index":3,"category":"potion","potion_name":"Sold Potion","price":5,"is_stocked":false,"can_afford":true}]}""")!;
         return new JsonObject { ["state_type"] = kind, ["player"] = Player(), [kind] = kind == "shop" ? data : new JsonObject { ["shop"] = data } };
     }
+    static JsonNode RestSite(int hp = 70)
+    {
+        var player = Player(); player["hp"] = hp;
+        return new JsonObject
+        {
+            ["state_type"] = "rest_site", ["player"] = player,
+            ["rest_site"] = JsonNode.Parse("""{"options":[{"index":0,"id":"HEAL","name":"Rest","description":"Heal for 30% of your Max HP (21).","is_enabled":true},{"index":1,"id":"SMITH","name":"Smith","description":"Upgrade a card in your Deck.","is_enabled":true}],"can_proceed":false}""")
+        };
+    }
 
     internal static async Task Run()
     {
         Options();
+        RestOptions();
         ReplacementValidation();
         await RewardsRun(freeSlot: true);
         await RewardsRun(freeSlot: false);
         await MultiplePotions();
+        foreach (var (first, second) in new[] { (true, true), (true, false), (false, true), (false, false) })
+            await MultipleCards(first, second);
+        await MultipleCards(true, true, resumeInSelection: true);
+        CardRewardTracking();
         await ShopRun();
         await ShopBudgetQuestions();
+        await RestQuestions();
         await InterruptedReplacement(stop: true);
         await InterruptedReplacement(stop: false);
         await DisabledStrategy();
-        Console.WriteLine("PASS Jev reward order, potion replacement/skip, shop budgets/removal/exit choices, and interrupted replacements");
+        Console.WriteLine("PASS Jev reward order, separate card rewards/skip/resume, potion replacement/skip, shop budgets/removal/exit, rest-site questions, and interrupted replacements");
     }
 
     static void Options()
@@ -96,6 +111,105 @@ internal static class JevStrategyChecks
             Check(choices.Count == 1 && GameState.ForcedAction(state, choices)?["command"].Text("action") == "close_shop", "prices are rechecked against the latest gold even with stale can_afford flags");
             JevStrategy.Shop(state)!["items"]![0]!["price"] = 0;
             Check(policy.Prepare(state, GameState.Actions(state)).Actions.Count == 3, "free stocked items remain available");
+        }
+    }
+
+    static void RestOptions()
+    {
+        var policy = new JevStrategy();
+        foreach (int hp in new[] { 70, 69, 12 })
+        {
+            var state = RestSite(hp); var legal = GameState.Actions(state);
+            var snapshot = state.WriteString(); var originalActions = legal.WriteString();
+            var options = policy.Prepare(state, legal);
+            Check(options.Actions.Count == 2 && options.Automatic == null && GameState.ForcedAction(state, options.Actions) == null,
+                "rest and smith remain genuine decisions without potion-discard noise");
+            Check(options.Question!.Contains($"{hp}/70 HP; {70 - hp} HP is missing")
+                && options.Actions[0].Text("summary").Contains(hp == 70 ? "restore 0 HP" : $"capped at {70 - hp} missing HP"),
+                "full and partial healing use current missing HP, not the nominal 21-HP label");
+            Check(options.Actions[1].Text("summary").Contains("permanently upgrade") && options.Question.Contains("visible non-healing effect"),
+                "upgrades are explicit without overriding visible rest benefits");
+            Check(options.Actions.Items().All(a => JsonNode.DeepEquals(a["command"], legal.Items().Single(l => l.Text("id") == a.Text("id"))["command"])),
+                "rest-site annotations retain executable IDs and commands");
+            Check(snapshot == state.WriteString() && originalActions == legal.WriteString(), "rest-site preparation must not change the snapshot or legal actions");
+        }
+        var localized = RestSite();
+        var rows = localized["rest_site"]!["options"]!.AsArray();
+        rows[0]!["name"] = "休息"; rows[0]!["index"] = 7;
+        rows[1]!["name"] = "锻造"; rows[1]!["index"] = 3;
+        var first = rows[0]!; rows.RemoveAt(0); rows.Add(first);
+        var choices = policy.Prepare(localized, GameState.Actions(localized)).Actions;
+        Check(choices[0].Text("summary").Contains("permanently upgrade") && choices[1].Text("summary").Contains("restore 0 HP"),
+            "rest-site annotations use stable option IDs regardless of language and position");
+        rows[0]!["is_enabled"] = false;
+        rows.Add(JsonNode.Parse("""{"index":8,"id":"CUSTOM","name":"Custom option","description":"Another benefit.","is_enabled":true}"""));
+        choices = policy.Prepare(localized, GameState.Actions(localized)).Actions;
+        Check(choices.Items().Select(c => c["command"].Num("index")).SequenceEqual(new int?[] { 7, 8 }),
+            "disabled Smith is not invented; Rest and unknown enabled options remain available");
+        foreach (var field in new[] { "hp", "max_hp" })
+        {
+            var unknown = RestSite(); unknown["player"]![field] = null;
+            var options = policy.Prepare(unknown, GameState.Actions(unknown));
+            Check(!options.Question!.Contains("You have") && !options.Actions[0].Text("summary").Contains("restore 0 HP"),
+                "missing health data does not invent a full-health state");
+        }
+        var completed = RestSite(); completed["rest_site"]!["options"] = new JsonArray(); completed["rest_site"]!["can_proceed"] = true;
+        Check(GameState.ForcedAction(completed, policy.Prepare(completed, GameState.Actions(completed)).Actions)?["command"].Text("action") == "proceed",
+            "completed rest sites still proceed automatically with held potions");
+    }
+
+    static async Task RestQuestions()
+    {
+        foreach (var (hp, smith, restBenefit) in new[] { (70, true, false), (12, false, false), (70, false, true) })
+        {
+            var initial = RestSite(hp);
+            var guidance = restBenefit ? "Rest for the visible relic reward, even at full HP." : "Win this run.";
+            if (restBenefit) initial["player"]!["relics"]!.AsArray().Add(JsonNode.Parse("""{"id":"TEST_REST_REWARD","name":"Rest Reward","description":"Resting grants a card reward."}"""));
+            using var handler = new Scenario(initial);
+            handler.Choose = body =>
+            {
+                var question = body["questions"]!["action0"]!;
+                var instructions = question.Text("instructions");
+                Check(body.Text("state").Contains(guidance), "player rest-site guidance survives into every Jev request");
+                if (handler.State.Text("state_type") == "card_select")
+                {
+                    Check(!instructions.Contains("Which rest-site option") && body.Text("state").Contains("[Upgrade 0]"),
+                        "Smith's next request uses normal card-selection instructions and upgrade previews");
+                    return Pick(body, "Neutralize");
+                }
+                Check(instructions.StartsWith($"You have {hp}/70 HP; {70 - hp} HP is missing")
+                    && !instructions.Contains("Gold, opening card rewards"), "the actual wire request uses the focused rest-site question");
+                Check(question["criteria"]!.AsObject().Count == 2, "rest-site request offers only the two real rest-site choices");
+                if (restBenefit) Check(body.Text("state").Contains("Resting grants a card reward."), "non-healing rest benefits stay visible");
+                return Pick(body, smith ? "permanently upgrade" : "rest Rest");
+            };
+            handler.Apply = command =>
+            {
+                switch (command.Text("action"))
+                {
+                    case "choose_rest_option":
+                        Check(command.Num("index") == (smith ? 1 : 0), "execute the selected rest option without replacing Jev's decision");
+                        if (smith) return new JsonObject
+                        {
+                            ["state_type"] = "card_select", ["player"] = initial["player"]!.DeepClone(),
+                            ["card_select"] = JsonNode.Parse("""{"screen_type":"upgrade","cards":[{"index":0,"name":"Neutralize","description":"Deal 3 damage. Apply 1 Weak.","upgrade_description":"Deal 4 damage. Apply 2 Weak."},{"index":1,"name":"Strike","description":"Deal 6 damage.","upgrade_description":"Deal 9 damage."}]}""")
+                        };
+                        break;
+                    case "select_card": Check(command.Num("index") == 0, "Smith selects the chosen card"); break;
+                    case "proceed": return Over();
+                    default: throw new Exception("Unexpected rest-site command: " + command);
+                }
+                var completed = initial.DeepClone();
+                completed["rest_site"]!["options"] = new JsonArray(); completed["rest_site"]!["can_proceed"] = true;
+                if (!smith) completed["player"]!["hp"] = Math.Min(hp + 21, 70);
+                return completed;
+            };
+            using var runtime = await Runtime(handler);
+            runtime.StartGameplay(guidance, "run");
+            await Wait(runtime);
+            Check(handler.Requests.Count == (smith ? 2 : 1) && handler.Commands.Select(c => c.Text("action")).SequenceEqual(smith
+                ? new[] { "choose_rest_option", "select_card", "proceed" } : new[] { "choose_rest_option", "proceed" }),
+                "full-health smithing, injured resting and explicit rest benefits keep their choices and automatic exit");
         }
     }
 
@@ -188,6 +302,84 @@ internal static class JevStrategyChecks
         runtime.StartGameplay("Win.", "run");
         await Wait(runtime);
         Check(handler.Requests.Count == 2 && handler.Commands.Count == 3, "skip one potion, replace another, then automatically proceed");
+    }
+
+    static async Task MultipleCards(bool skipFirst, bool skipSecond, bool resumeInSelection = false)
+    {
+        // A declined card offer stays enabled in the real loot UI. Two offers
+        // may have identical labels (and even identical cards), but distinct IDs.
+        var loot = Rewards();
+        loot["run"] = JsonNode.Parse("""{"act":1,"floor":6,"ascension":10}""");
+        loot["player"]!["potions"] = new JsonArray();
+        loot["rewards"]!["items"] = JsonNode.Parse("""[{"index":0,"reward_id":43,"type":"gold","gold_amount":7},{"index":1,"reward_id":44,"type":"potion","potion_id":"FORTIFIER","potion_name":"Fortifier"},{"index":2,"reward_id":41,"type":"card"},{"index":3,"reward_id":42,"type":"card"}]""");
+        JsonNode Offer(int id) => new JsonObject
+        {
+            ["state_type"] = "card_reward", ["run"] = loot["run"]!.DeepClone(), ["player"] = loot["player"]!.DeepClone(),
+            ["card_reward"] = new JsonObject { ["reward_id"] = id, ["can_skip"] = true,
+                ["cards"] = JsonNode.Parse("""[{"index":0,"name":"Defend","description":"Gain 5 Block.","cost":1}]""") }
+        };
+        using var handler = new Scenario(resumeInSelection ? Offer(41) : loot.DeepClone());
+        var opened = new List<int>(); var decided = new List<int>();
+        handler.Choose = body =>
+        {
+            var id = handler.State["card_reward"].Num("reward_id")!.Value;
+            Check(!decided.Contains(id), "a skipped or accepted card reward must never be reopened");
+            decided.Add(id);
+            Check(body["questions"]!["action0"].Text("instructions").Contains("compared with adding no card"), "card offers use the focused question");
+            return Pick(body, (id == 41 ? skipFirst : skipSecond) ? "Decline this card reward" : "Defend");
+        };
+        handler.Apply = command =>
+        {
+            Check(handler.Commands.Count <= 8, "loot sequence must terminate instead of looping");
+            switch (command.Text("action"))
+            {
+                case "claim_reward":
+                    var index = command.Num("index")!.Value;
+                    var reward = loot["rewards"]!["items"]![index]!;
+                    if (reward.Text("type") == "card")
+                    {
+                        var id = reward.Num("reward_id")!.Value;
+                        Check(!opened.Contains(id), "open each individual card offer at most once");
+                        opened.Add(id); return Offer(id);
+                    }
+                    if (reward.Text("type") == "gold") loot["player"]!["gold"] = 67;
+                    else AcquirePotion(loot, reward);
+                    RemoveReward(loot, index); return loot;
+                case "skip_card_reward": return loot; // Deliberately leave the row clickable.
+                case "select_card_reward":
+                    var chosenId = handler.State["card_reward"].Num("reward_id");
+                    var chosen = loot["rewards"]!["items"]!.Items().Single(r => r.Num("reward_id") == chosenId);
+                    RemoveReward(loot, chosen.Num("index")!.Value); return loot;
+                case "proceed":
+                    Check(decided.SequenceEqual(new[] { 41, 42 }), "both card rewards must be resolved before proceeding");
+                    Check(loot["player"].Num("gold") == 67 && loot["player"]!["potions"]!.Items().Single().Text("id") == "FORTIFIER", "collect the other loot automatically");
+                    return Over();
+                default: throw new Exception("Unexpected multi-card command: " + command);
+            }
+        };
+        using var runtime = await Runtime(handler);
+        runtime.StartGameplay("Win.", "run");
+        await Wait(runtime);
+        Check(handler.Requests.Count == 2 && opened.Count == (resumeInSelection ? 1 : 2), "one Jev choice per card offer; reward navigation remains automatic");
+        Check(loot["rewards"]!["items"]!.AsArray().Count == (skipFirst ? 1 : 0) + (skipSecond ? 1 : 0), "skipped rows stay visible without blocking completion");
+    }
+
+    static void CardRewardTracking()
+    {
+        var policy = new JevStrategy();
+        var loot = Rewards(); loot["run"] = new JsonObject { ["floor"] = 6 };
+        loot["rewards"]!["items"] = new JsonArray(new JsonObject { ["index"] = 0, ["type"] = "card", ["reward_id"] = 41 });
+        var open = policy.Prepare(loot, GameState.Actions(loot)).Automatic!;
+        var offer = new JsonObject { ["state_type"] = "card_reward", ["run"] = loot["run"]!.DeepClone(),
+            ["card_reward"] = new JsonObject { ["can_skip"] = true } };
+        var skip = GameState.Actions(offer).Items().Single();
+        policy.Observe(loot, open, offer);
+        policy.Observe(offer, skip, offer);
+        Check(policy.Prepare(loot, GameState.Actions(loot)).Automatic != null, "an unchanged selection screen is not a completed reward");
+        policy.Observe(offer, skip, loot);
+        Check(policy.Prepare(loot, GameState.Actions(loot)).Actions.Items().All(a => a["command"].Text("action") != "claim_reward"), "opened reward is remembered even without selection reward_id");
+        loot["run"]!["floor"] = 7;
+        Check(policy.Prepare(loot, GameState.Actions(loot)).Automatic != null, "a new floor starts a fresh reward sequence");
     }
 
     static async Task ShopRun()

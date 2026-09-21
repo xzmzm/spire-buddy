@@ -29,7 +29,7 @@ public static class Mod
     private static LineEdit JevEndpoint = null!, JevModel = null!, JevKey = null!;
     private static SpinBox MaxTokens = null!;
     private static CheckButton UseCombatSolver = null!, HideCombatSolverUi = null!, AutoTreasure = null!;
-    private static CheckButton UseJevStrategy = null!, UseJevCombat = null!;
+    private static CheckButton UseJevStrategy = null!, UseJevCombat = null!, ReviewJev = null!;
     private static Label SolverHint = null!;
     private static bool SolverAvailable, HideSolverOverlay;
     private static ulong NextSolverProbe;
@@ -336,6 +336,8 @@ public static class Mod
         Wrapped(jev, L10n.T("Choose paths, rewards, events, shops and other campaign decisions with Jev.", "由 Jev 选择路线、奖励、事件、商店选项及其他战役决策。"));
         UseJevCombat = new CheckButton { Text = L10n.T("Use Jev for combat", "使用 Jev 进行战斗决策") }; jev.AddChild(UseJevCombat);
         Wrapped(jev, L10n.T("Combat Solver takes priority when enabled. Jev handles fights and card choices when the solver is off or unavailable.", "启用时优先使用战斗路线求解器。求解器关闭或不可用时，由 Jev 处理战斗和选牌。"));
+        ReviewJev = new CheckButton { Text = L10n.T("Review uncertain Jev choices", "复核 Jev 不确定的选择") }; jev.AddChild(ReviewJev);
+        Wrapped(jev, L10n.T("Ask the configured Buddy model to review uncertain or risky choices before acting. Improves oversight but can add time and API cost.", "行动前由已配置的 Buddy 模型复核不确定或风险较高的选择，可能增加等待时间和 API 费用。"));
         JevEndpoint = Input(jev, L10n.T("Jev evaluation URL", "Jev 评估 URL"), JevClient.DefaultEndpoint);
         Wrapped(jev, L10n.T("Full URL, including /v1/systemone for TypeSafe. Custom compatible endpoints are supported.", "填写完整 URL；TypeSafe 需包含 /v1/systemone，也可使用兼容的自定义端点。"));
         JevModel = Input(jev, L10n.T("Jev model", "Jev 模型"), JevClient.DefaultModel);
@@ -632,6 +634,7 @@ public static class Mod
         payload["auto_treasure"] = AutoTreasure.ButtonPressed;
         payload["use_jev_strategy"] = UseJevStrategy.ButtonPressed;
         payload["use_jev_combat"] = UseJevCombat.ButtonPressed;
+        payload["jev_review_uncertain"] = ReviewJev.ButtonPressed;
         payload["jev_endpoint"] = JevEndpoint.Text;
         payload["jev_model"] = JevModel.Text;
         if (JevKey.Text.Length > 0 && JevKey.Text != MaskedKey) payload["jev_api_key"] = JevKey.Text;
@@ -654,6 +657,7 @@ public static class Mod
         AutoTreasure.ButtonPressed = config.Flag("auto_treasure", true);
         UseJevStrategy.ButtonPressed = config.Flag("use_jev_strategy");
         UseJevCombat.ButtonPressed = config.Flag("use_jev_combat");
+        ReviewJev.ButtonPressed = config.Flag("jev_review_uncertain");
         JevEndpoint.Text = config.Text("jev_endpoint", JevClient.DefaultEndpoint);
         JevModel.Text = config.Text("jev_model", JevClient.DefaultModel);
         InitializedSettings = true;

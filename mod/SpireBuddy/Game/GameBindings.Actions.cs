@@ -949,6 +949,8 @@ internal static partial class GameBindings
         var overlay = NOverlayStack.Instance?.Peek();
         if (overlay is not NCrystalSphereScreen screen)
             return Error("Crystal Sphere screen is not open");
+        if (GetCrystalSphereMinigame(screen) is not { DivinationCount: > 0 })
+            return Error("No Crystal Sphere divinations remain; wait for rewards or proceed");
 
         if (!data.TryGetValue("tool", out var toolElem))
             return Error("Missing 'tool' (expected 'big' or 'small')");
@@ -963,7 +965,7 @@ internal static partial class GameBindings
 
         if (button == null)
             return Error($"Unknown Crystal Sphere tool: {tool}");
-        if (!button.Visible || !button.IsEnabled)
+        if (!IsControlVisibleOrActionable(button))
             return Error($"Crystal Sphere tool '{tool}' is not available");
 
         button.ForceClick();
@@ -979,6 +981,8 @@ internal static partial class GameBindings
         var overlay = NOverlayStack.Instance?.Peek();
         if (overlay is not NCrystalSphereScreen screen)
             return Error("Crystal Sphere screen is not open");
+        if (GetCrystalSphereMinigame(screen) is not { DivinationCount: > 0 })
+            return Error("No Crystal Sphere divinations remain; wait for rewards or proceed");
 
         if (!data.TryGetValue("x", out var xElem))
             return Error("Missing 'x' (cell x-coordinate)");
@@ -992,7 +996,7 @@ internal static partial class GameBindings
             .FirstOrDefault(c => c.Entity.X == x && c.Entity.Y == y);
         if (cell == null)
             return Error($"Crystal Sphere cell ({x}, {y}) was not found");
-        if (!cell.Entity.IsHidden || !cell.Visible)
+        if (!cell.Entity.IsHidden || !IsNodeVisible(cell))
             return Error($"Crystal Sphere cell ({x}, {y}) is not clickable");
 
         cell.EmitSignal(NClickableControl.SignalName.Released, cell);

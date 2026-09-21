@@ -90,7 +90,7 @@ internal static partial class GameState
                     if (target.Contains("enemy") && !target.Contains("all"))
                     {
                         foreach (var enemy in s["battle"]?["enemies"].Items() ?? [])
-                            if ((enemy["hp"]?.GetValue<double>() ?? 0) > 0 && enemy["entity_id"] != null)
+                            if (enemy.Num("hp") is > 0 && enemy["entity_id"] != null)
                             { Add("play_card", card, "card_index"); At(enemy["entity_id"]!); }
                     }
                     else Add("play_card", card, "card_index");
@@ -123,9 +123,7 @@ internal static partial class GameState
             case "bundle_select": Rows("bundles", "select_bundle"); If("can_confirm", "confirm_bundle_selection"); If("can_cancel", "cancel_bundle_selection"); break;
             case "relic_select": Rows("relics", "select_relic"); If("can_skip", "skip_relic_selection"); break;
             case "crystal_sphere":
-                foreach (var tool in new[] { "big", "small" }) if (data.Flag("can_use_" + tool + "_tool") && data.Text("tool") != tool) Add("crystal_sphere_set_tool", argument: "tool", value: JsonValue.Create(tool));
-                foreach (var cell in data?["clickable_cells"].Items() ?? []) if (cell["x"] != null && cell["y"] != null) { Add("crystal_sphere_click_cell", argument: "x", value: cell["x"]); result.Last()!["command"]!["y"] = cell["y"]!.DeepClone(); result.Last()!["summary"] = result.Last().Text("summary") + "," + cell["y"]; }
-                If("can_proceed", "crystal_sphere_proceed"); break;
+                result = CrystalSphereView.Actions(data); break;
         }
         if (kind is not ("menu" or "game_over" or "unknown" or "overlay" or "transition" or "unsupported") && !Combat(s)) Potions(false);
         return result;
@@ -141,8 +139,8 @@ internal static partial class GameState
                 if (use && p.Flag("can_use_in_combat", true))
                 {
                     if (target.Contains("enemy") && !target.Contains("all"))
-                    { foreach (var e in s["battle"]?["enemies"].Items() ?? []) if ((e["hp"]?.GetValue<double>() ?? 0) > 0 && e["entity_id"] != null) { Add("use_potion", p, "slot", p["slot"]); At(e["entity_id"]!); } }
-                    else if (!target.Contains("enemy") || (s["battle"]?["enemies"].Items() ?? []).Any(e => (e["hp"]?.GetValue<double>() ?? 0) > 0)) Add("use_potion", p, "slot", p["slot"]);
+                    { foreach (var e in s["battle"]?["enemies"].Items() ?? []) if (e.Num("hp") is > 0 && e["entity_id"] != null) { Add("use_potion", p, "slot", p["slot"]); At(e["entity_id"]!); } }
+                    else if (!target.Contains("enemy") || (s["battle"]?["enemies"].Items() ?? []).Any(e => e.Num("hp") is > 0)) Add("use_potion", p, "slot", p["slot"]);
                 }
                 Add("discard_potion", p, "slot", p["slot"]);
             }

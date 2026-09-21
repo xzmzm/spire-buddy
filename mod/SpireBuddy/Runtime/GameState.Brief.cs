@@ -45,8 +45,9 @@ internal static partial class GameState
             L("[Actions]");
             var cards = actions.Items().Select(CardActionId).Where(id => id.Length > 0).ToList();
             if (cards.Count > 0) L("  " + (kind == "hand_select" ? "select: " : "play: ") + string.Join(" ", cards));
-            foreach (var a in actions.OfType<JsonObject>().Where(a => CardActionId(a).Length == 0))
-                L("  " + a.Text("id") + " " + a.Text("summary"));
+            if (kind == "crystal_sphere") CrystalSphereView.ActionLines(lines, actions);
+            else foreach (var a in actions.OfType<JsonObject>().Where(a => CardActionId(a).Length == 0))
+                    L("  " + a.Text("id") + " " + a.Text("summary"));
         }
         var tips = glossary.Where(kv => kv.Value.Length > 0 && (memory == null || memory.Definition("keyword", kv.Key, kv.Value))).Select(kv => kv.Key + ": " + kv.Value).ToList();
         if (tips.Count > 0) L("[Keywords] " + string.Join(" | ", tips));
@@ -283,20 +284,7 @@ internal static partial class GameState
 
     static void Crystal(List<string> lines, JsonNode? data)
     {
-        if (data == null) return;
-        var segs = new List<string>();
-        if (data["grid_width"] != null) segs.Add($"{data["grid_width"]}x{data["grid_height"]} grid");
-        var tool = data.Text("tool");
-        if (tool.Length > 0 && tool != "none") segs.Add("tool: " + tool);
-        var left = OneLine(data.Text("divinations_left_text"));
-        if (left.Length > 0) segs.Add(left);
-        var instructions = OneLine(data.Text("instructions_description"));
-        if (instructions.Length > 0) segs.Add(instructions);
-        if (segs.Count > 0) lines.Add("[Crystal sphere] " + string.Join(" | ", segs));
-        var hidden = string.Join(" ", data["clickable_cells"].Items().Select(c => $"({c["x"]},{c["y"]})"));
-        if (hidden.Length > 0) lines.Add("  hidden: " + hidden);
-        foreach (var item in data["revealed_items"].Items())
-            lines.Add($"  revealed: {(item.Flag("is_good") ? "good" : "bad")} {item.Text("item_type")} at ({item["x"]},{item["y"]}) {item["width"]}x{item["height"]}");
+        if (data != null) new CrystalSphereView(data).Brief(lines);
     }
 
     static void Menu(List<string> lines, JsonNode? state)
@@ -317,7 +305,7 @@ internal static partial class GameState
         if (player["energy"] != null)
         {
             var segs = new List<string> { $"Energy {player["energy"]}/{player["max_energy"]}" };
-            if ((player["block"]?.GetValue<double>() ?? 0) > 0) segs.Add("Block " + player["block"]);
+            if (player["block"] != null) segs.Add("Block " + player["block"]);
             if (player["stars"] != null) segs.Add("Stars " + player["stars"]);
             var powers = string.Join(", ", player["status"].Items().Select(PowerText).Where(s => s.Length > 0));
             if (powers.Length > 0) segs.Add(powers);
@@ -424,7 +412,7 @@ internal static partial class GameState
         return string.Join(" ", parts.Where(p => p.Length > 0));
     }
 
-    static string CardName(JsonNode card) => card.Text("name") + (card.Flag("is_upgraded") ? "+" : "");
+    static string CardName(JsonNode card) => card.Text("name") + (card.Flag("is_upgraded") && !card.Text("name").EndsWith('+') ? "+" : "");
 
     static string PowerShort(JsonNode p) => p.Text("name") + (p["amount"] != null ? " " + p["amount"] : "");
 

@@ -15,6 +15,7 @@ internal static partial class GameState
         if (JevStrategy.Shop(state) is JsonNode shop)
             shop["items"] = new JsonArray(shop["items"].Items().Where(i => JevStrategy.Affordable(state, i)).Select(i => i.DeepClone()).ToArray());
         var kind = state.Text("state_type");
+        var combat = Combat(state) || state.Flag("in_combat") || kind == "hand_select";
         var brief = Brief(fingerprint, instructions, plan, state, new JsonArray());
         var lines = new List<string> { "screen=" + kind, brief.TrimEnd() };
         if (kind == "menu" && state[kind] == null) Menu(lines, state);
@@ -24,12 +25,14 @@ internal static partial class GameState
                     + (card["upgrade_star_cost"] == null ? "" : "stars=" + card["upgrade_star_cost"] + " ") + OneLine(card.Text("upgrade_description")));
         // Keep a unique rule for every held card variant, including generated
         // cards outside the permanent deck. Hand previews already have full text.
-        var shown = new HashSet<string>(state["player"]?["hand"].Items().Select(c => CardText(c, false)) ?? []);
+        string RuleKey(JsonNode c) => string.Join('|', CardName(c), c.Text("type"), c.Text("cost"), c.Text("star_cost"), c.Text("description"),
+            string.Join(';', c["keywords"].Items().Select(k => k.Text("name")).Order(StringComparer.Ordinal)));
+        var shown = new HashSet<string>(state["player"]?["hand"].Items().Select(RuleKey) ?? []);
         foreach (var pile in new[] { "deck", "draw_pile", "discard_pile", "exhaust_pile" })
             foreach (var card in state["player"]?[pile].Items() ?? [])
             {
                 var rule = CardText(card, false);
-                if (shown.Add(rule)) lines.Add("[Card rule] " + rule);
+                if (shown.Add(RuleKey(card))) lines.Add("[Card rule] " + rule + (pile == "deck" ? " (permanent deck)" : " (combat pile preview)"));
             }
         foreach (var enemy in state["battle"]?["enemies"].Items() ?? [])
             foreach (var power in enemy["status"].Items())
@@ -42,7 +45,7 @@ internal static partial class GameState
             var rule = orb.Text("name") + ": " + OneLine(orb.Text("description"));
             if (shown.Add(rule)) lines.Add("[Orb rule] " + rule);
         }
-        if (state["map"] is JsonNode map)
+        if (!combat && state["map"] is JsonNode map)
         {
             if (kind != "map") Map(lines, map);
             // Visible future topology is public. Omit only nodes behind the
@@ -61,9 +64,13 @@ internal static partial class GameState
                     lines.Add("[Route] " + MapKey(node) + " " + node.Text("type") + " -> " + string.Join(" ", node["children"].Items().Select(MapKey)));
         }
         // Commands are already observed outcomes, not future actions to execute.
-        foreach (var outcome in recent.Items().TakeLast(4)) lines.Add("[Recent] " + OneLine(outcome.Text("summary")));
+        foreach (var outcome in recent.Items().TakeLast(4))
+            lines.Add("[Recent] " + OneLine(outcome.Text("summary"))
+                + (outcome["hp_before"] != null && !JsonNode.DeepEquals(outcome["hp_before"], outcome["hp_after"]) ? $"; HP {outcome["hp_before"]} -> {outcome["hp_after"]}" : "")
+                + (outcome["gold_before"] != null && !JsonNode.DeepEquals(outcome["gold_before"], outcome["gold_after"]) ? $"; gold {outcome["gold_before"]} -> {outcome["gold_after"]}" : ""));
+        lines.AddRange(JevContext.Facts(state));
         if (feedback.Length > 0) lines.Add("[Feedback] " + OneLine(feedback));
-        return string.Join("\n", lines);
+        return JevContext.Normalize(string.Join("\n", lines));
     }
 
     static string MapKey(JsonNode node) => node is JsonArray coords

@@ -16,6 +16,7 @@ using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;
 using MegaCrit.Sts2.Core.Entities.Merchant;
 using MegaCrit.Sts2.Core.Entities.RestSite;
 using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.Events.Custom.CrystalSphereEvent;
 using MegaCrit.Sts2.Core.Models.Events;
 using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.Events.Custom;
@@ -91,6 +92,8 @@ internal static partial class GameBindings
             }
         }
         battle["enemies"] = enemies;
+        try { battle["lethal_check_supported"] = SupportsLethalSearch(combatState); }
+        catch { battle["lethal_check_supported"] = false; }
 
         return battle;
     }
@@ -272,6 +275,7 @@ internal static partial class GameBindings
         state["target_type"] = card.TargetType.ToString();
         state["can_play"] = canPlay;
         state["unplayable_reason"] = unplayableReason != UnplayableReason.None ? unplayableReason.ToString() : null;
+        AddCombatCardPreview(card, state);
         return state;
     }
 
@@ -723,7 +727,7 @@ internal static partial class GameBindings
         return state;
     }
 
-    private static Dictionary<string, object?> BuildMapState(RunState runState)
+    private static Dictionary<string, object?> BuildMapState(RunState runState, bool interactive = true)
     {
         var state = new Dictionary<string, object?>();
 
@@ -756,7 +760,7 @@ internal static partial class GameBindings
         // Next options - read travelable state from UI nodes
         var nextOptions = new List<Dictionary<string, object?>>();
         var mapScreen = NMapScreen.Instance;
-        if (mapScreen != null)
+        if (interactive && mapScreen != null)
         {
             var travelable = FindAll<NMapPoint>(mapScreen)
                 .Where(mp => mp.State == MapPointState.Travelable && mp.Point != null)
@@ -789,6 +793,18 @@ internal static partial class GameBindings
                 nextOptions.Add(option);
                 index++;
             }
+        }
+        if (!interactive)
+        {
+            // The hidden map UI can retain stale Travelable flags. Use public
+            // topology for planning; only the open map advertises travel actions.
+            var current = visitedCoords.Count > 0 ? map.GetPoint(visitedCoords[^1]) : map.StartingMapPoint;
+            foreach (var pt in (current?.Children.AsEnumerable() ?? []).OrderBy(p => p.coord.col))
+                nextOptions.Add(new Dictionary<string, object?>
+                {
+                    ["index"] = nextOptions.Count, ["col"] = pt.coord.col, ["row"] = pt.coord.row,
+                    ["type"] = pt.PointType.ToString()
+                });
         }
         state["next_options"] = nextOptions;
 
@@ -935,6 +951,15 @@ internal static partial class GameBindings
 
         var altButtons = FindAll<NCardRewardAlternativeButton>(cardScreen);
         state["can_skip"] = altButtons.Count > 0;
+
+        // Link the visible selection back to its underlying loot reward even
+        // when automation starts or resumes while this screen is already open.
+        // CardReward.Cards reads already-generated cards; it does not roll any.
+        var visible = cardHolders.Select(h => h.CardModel).Where(c => c != null).ToHashSet();
+        var root = ((SceneTree)Engine.GetMainLoop()).Root;
+        var source = FindAll<NRewardButton>(root).Select(b => b.Reward).OfType<CardReward>()
+            .FirstOrDefault(r => r.Cards.Any(c => visible.Contains(c)));
+        if (source != null) state["reward_id"] = RewardInstanceId(source);
 
         return state;
     }
@@ -1271,6 +1296,10 @@ internal static partial class GameBindings
     private static Dictionary<string, object?> BuildCrystalSphereState(NCrystalSphereScreen screen, RunState runState)
     {
         var state = new Dictionary<string, object?>();
+        var minigame = GetCrystalSphereMinigame(screen);
+        bool canDivine = minigame is { DivinationCount: > 0 } && IsNodeVisible(screen);
+        state["divinations_left"] = minigame?.DivinationCount;
+        state["can_divine"] = canDivine;
 
         var instructionsTitle = screen.GetNodeOrNull<Godot.Control>("%InstructionsTitle");
         if (instructionsTitle != null)
@@ -1301,9 +1330,7 @@ internal static partial class GameBindings
                 ["x"] = cell.Entity.X,
                 ["y"] = cell.Entity.Y,
                 ["is_hidden"] = cell.Entity.IsHidden,
-                ["is_clickable"] = cell.Entity.IsHidden && cell.Visible,
-                ["is_highlighted"] = cell.Entity.IsHighlighted,
-                ["is_hovered"] = cell.Entity.IsHovered
+                ["is_clickable"] = canDivine && cell.Entity.IsHidden && IsNodeVisible(cell)
             };
 
             if (!cell.Entity.IsHidden && cell.Entity.Item != null)
@@ -1313,7 +1340,7 @@ internal static partial class GameBindings
             }
 
             cellStates.Add(cellState);
-            if (cell.Entity.IsHidden && cell.Visible)
+            if (canDivine && cell.Entity.IsHidden && IsNodeVisible(cell))
             {
                 clickableCells.Add(new Dictionary<string, object?>
                 {
@@ -1331,6 +1358,12 @@ internal static partial class GameBindings
                      .Select(c => c.Entity.Item!)
                      .Distinct())
         {
+            // A visible fragment identifies an item, but only clearing its whole
+            // footprint earns it. Never enumerate the minigame's hidden items.
+            var occupied = cells.Where(c => c.Entity.X >= item.Position.X && c.Entity.X < item.Position.X + item.Size.X
+                && c.Entity.Y >= item.Position.Y && c.Entity.Y < item.Position.Y + item.Size.Y).ToList();
+            int remaining = occupied.Count(c => c.Entity.IsHidden);
+            var kind = item.ToSerializable(); // Static icon/rarity, not a generated reward.
             revealedItems.Add(new Dictionary<string, object?>
             {
                 ["item_type"] = item.GetType().Name,
@@ -1338,21 +1371,25 @@ internal static partial class GameBindings
                 ["y"] = item.Position.Y,
                 ["width"] = item.Size.X,
                 ["height"] = item.Size.Y,
-                ["is_good"] = item.IsGood
+                ["is_good"] = item.IsGood,
+                ["revealed_cells"] = occupied.Count - remaining,
+                ["remaining_cells"] = remaining,
+                ["is_fully_revealed"] = remaining == 0,
+                ["rarity"] = item.GetType().Name switch
+                {
+                    "CrystalSpherePotion" => kind.potionRarity.ToString(),
+                    "CrystalSphereCardReward" => kind.cardRarity.ToString(),
+                    _ => null
+                }
             });
         }
         state["revealed_items"] = revealedItems;
 
-        var bigButton = screen.GetNodeOrNull<Godot.Control>("%BigDivinationButton");
-        var smallButton = screen.GetNodeOrNull<Godot.Control>("%SmallDivinationButton");
-        bool bigVisible = bigButton?.Visible == true;
-        bool smallVisible = smallButton?.Visible == true;
-        bool bigActive = bigButton?.GetNodeOrNull<Godot.Control>("%Outline")?.Visible == true;
-        bool smallActive = smallButton?.GetNodeOrNull<Godot.Control>("%Outline")?.Visible == true;
-
-        state["tool"] = bigActive ? "big" : smallActive ? "small" : "none";
-        state["can_use_big_tool"] = bigVisible;
-        state["can_use_small_tool"] = smallVisible;
+        var bigButton = screen.GetNodeOrNull<NClickableControl>("%BigDivinationButton");
+        var smallButton = screen.GetNodeOrNull<NClickableControl>("%SmallDivinationButton");
+        state["tool"] = minigame?.CrystalSphereTool.ToString().ToLowerInvariant() ?? "none";
+        state["can_use_big_tool"] = canDivine && IsControlVisibleOrActionable(bigButton);
+        state["can_use_small_tool"] = canDivine && IsControlVisibleOrActionable(smallButton);
 
         var divinationsLeft = screen.GetNodeOrNull<Godot.Control>("%DivinationsLeft");
         if (divinationsLeft != null)
@@ -1366,6 +1403,9 @@ internal static partial class GameBindings
 
         return state;
     }
+
+    private static CrystalSphereMinigame? GetCrystalSphereMinigame(NCrystalSphereScreen screen) =>
+        GetInstanceFieldValue(screen, "_entity") as CrystalSphereMinigame;
 
     private static Dictionary<string, object?> BuildTreasureState(TreasureRoom treasureRoom, RunState runState)
     {

@@ -47,6 +47,19 @@ the snapshot fingerprint.
 This keeps strategic freedom on the model side without giving generated text a
 direct path to the game API.
 
+Crystal Sphere uses `CrystalSphereView`, a pure public-state geometry layer shared
+by both model paths. It renders a board and partial-item completion budgets,
+annotates every legal click with its current tool's coverage and known effects,
+and shows examples for both tools without pruning the legal action set. Big-tool
+completion costs are optimistic set-cover lower bounds, not executable or safe
+plans: they ignore unknown contents, curse exposure and centers cleared by earlier
+clicks. Only items already exposed through at least one visible cell are considered.
+The binding reads the numeric divination counter and tool, not localized label text
+or button outlines, and never reads hidden item assignments into the snapshot.
+Hover/highlight changes are excluded from decision fingerprints. Zero remaining
+divinations disables tool/cell actions while reward resolution settles. Each tool
+change or reveal is a separate decision.
+
 The selected decision may contain up to 32 deterministic steps. Each `action_ids`
 entry is an advertised action or card alias, optionally followed by known hand
 choices: `["c3 c1", "a5"]` plays c3, chooses c1 for discard/exhaust, confirms,
@@ -111,7 +124,8 @@ documented enemy move probabilities.
 The independent `use_jev_strategy` and `use_jev_combat` settings replace requests
 to the respective gameplay model with Jev evaluations. The existing gameplay
 holders still retain instructions and receive Buddy's updates, but no model
-history or tool loop is opened for a Jev decision. Combat Solver is checked before
+history or tool loop is opened for a Jev evaluation. Optional uncertainty review
+uses one isolated Buddy request with only a legal-ID selection tool. Combat Solver is checked before
 either combat provider, including combat-owned modal selections. A missing or
 refusing solver falls through to the configured combat provider. Chat always uses
 the normal Buddy session.
@@ -121,7 +135,11 @@ claims into free slots, and proceeding after completion are local actions in tha
 order. Jev still chooses the card (or skip) on the card screen. Full-slot potion
 rewards offer a replacement for each held slot plus a local skip. Skips are tracked
 per run by weakly assigned reward object IDs, so claimed rows may reindex without
-confusing identical potion rewards. Skipped entries are omitted from subsequent
+confusing identical potion or card rewards. A settled card pick/skip marks the
+originating reward as handled; the adapter matches visible card objects to their
+reward ID when starting from an already-open selection. A no-op selection is not
+marked. Reward tracking lives across Stop/Play and resets on a new run location.
+Skipped entries are omitted from subsequent
 Jev briefs, and the final proceed leaves them behind. Unrecognized reward types
 remain model-controlled. Other gameplay providers keep their existing behavior.
 
@@ -143,6 +161,16 @@ the generic strategy question for shops, avoiding irrelevant reward instructions
 and keeping one choice request per decision. Combat and other strategy screens
 keep their own instructions. Action IDs and commands are unchanged.
 
+Rest sites also use a dedicated `JevStrategy.Options` question, with current HP
+and the computed missing-HP cap. Full-health Rest criteria explicitly show zero
+healing; Smith criteria describe the permanent upgrade and subsequent selection.
+Annotations use stable `HEAL`/`SMITH` option IDs, not localized names or assumed
+positions. Only potion discards are filtered: all enabled rest-site options remain
+available so visible relic effects and player instructions can still favor Rest.
+Unknown HP is not replaced with a guessed heal amount, and no fixed healing
+percentage is assumed. Rest snapshots also contain safe upgraded card previews.
+The card-selection screen receives an upgrade-specific marginal-benefit question.
+
 Jev sends `state`, `model`, and typed `choice` questions to the exact configured
 `jev_endpoint`, authenticated solely by `jev_api_key`. Every action ID maps to a
 locally enumerated command. Groups contain at most 255 options, with a final
@@ -151,16 +179,40 @@ group's option set and converted into a decision bound locally to
 the original snapshot. The common execution loop then performs freshness,
 guidance, cancellation and action validation. Malformed answers never execute.
 
+`JevContext` describes choices with structured criteria, screen-specific questions,
+deck cost/support facts, visible attack totals and route distances/elite ranges.
+Dependency scans are explicitly incomplete and never ban cards. Visible attacks
+minus current Block are not treated as exact HP loss. The adapter includes public
+map/boss context off the map screen, using topology rather than stale hidden UI
+travel flags. Only the open map exposes executable travel actions.
+
 The Jev brief uses no history-dependent omissions. Unique held-card rules, public
 enemy/orb/pet effects, upgrade previews and reachable visible map topology supplement
 the existing compact renderer. Criteria carry the legal choices once; the brief
-omits its action list. Only four recent action summaries and the last definitive
-failure feedback accompany current state. The existing context setting bounds
+omits its action list. Four recent action summaries with HP/gold changes, last-fight
+net HP and held-potion counts, and the last definitive failure feedback accompany
+current state. Last-fight memory also observes solver-controlled fights and resets
+at the menu or a floor regression. The existing context setting bounds
 the UTF-8 token estimate of the entire request. HTTP 429/529 evaluations retry at
 most twice with backoff (or bounded Retry-After); game mutations are never retried.
-`jev_response` traces contain selected IDs and usage, without credentials or full
-payloads. Jev and Buddy credentials are independently persisted, masked, and
+`jev_response` traces retain selected IDs, complete answers (confidence and
+probabilities), model, usage and prompt version without credentials or full request
+payloads. Settled outcomes include the decision snapshot, action ID, source and
+before/after HP/gold. Jev and Buddy credentials are independently persisted, masked, and
 omitted from status responses.
+
+`jev_review_uncertain` defaults off; saved opt-ins remain enabled. When enabled,
+it requests one independent review when choice
+confidence is below 0.20 for strategy or 0.30 for combat, the leading probability
+margin is at most 0.05, or visible facts flag an end turn with playable cards,
+unused energy and attacks exceeding Block, or Fortifier at zero Block. These are
+initial routing heuristics, not calibrated accuracy thresholds or action bans.
+The reviewer can preserve useful end-turn or potion-triggered exceptions. It uses
+the normal Buddy endpoint/model with a fresh bounded context, can only choose a
+current action ID, and cannot execute game tools. No recursive review is possible.
+Malformed answers stop without executing; normal cancellation, guidance and
+snapshot freshness validation applies afterward. `jev_review` traces record the
+original and final IDs, reason, model, usage and prompt version.
 
 `BotRuntime` has three agent roles with independently bounded sessions:
 

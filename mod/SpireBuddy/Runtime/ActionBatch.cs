@@ -59,6 +59,8 @@ internal static class ActionBatch
             : [decision.Text("action_id")];
         if (ids.Length == 0 || ids.Length > 32 || ids.Distinct().Count() != ids.Length) throw new InvalidOperationException("Invalid action batch.");
         var selected = new List<JsonNode>();
+        if (state.Text("state_type") == "crystal_sphere" && ids.Length > 1)
+            throw new InvalidOperationException("Crystal Sphere reveals new information. Submit one tool change or cell click, then inspect the updated board.");
         var steps = ids.Length;
         foreach (var id in ids)
         {

@@ -92,6 +92,7 @@ When no saved settings or environment overrides exist, the first-run defaults ar
 | Hide Combat Solver UI | Off |
 | Auto loot treasure chests | On |
 | Use Jev for strategy / combat | Both off |
+| Review uncertain Jev choices | Off |
 | Jev evaluation URL | `https://api.typesafe.ai/v1/systemone` |
 | Jev model | `jev-latest` |
 
@@ -139,6 +140,11 @@ Jev connection testing works even while its decision toggles are off.
 - **Use Jev for combat** replaces the combat model, including card-selection
   screens within a fight. An enabled, available Combat Solver has priority.
   Jev handles a fight if the solver is off, missing or refuses control.
+- **Review uncertain Jev choices** asks the configured Buddy model for one
+  independent choice when Jev is uncertain, its leading choices are nearly tied,
+  or it proposes a potentially wasteful end turn or zero-Block Fortifier.
+  This is off by default. Enable it to request a second opinion, with extra latency
+  and API cost. Reviews retain the same stop, guidance and stale-state checks.
 
 Enable both to use Jev for all model-controlled gameplay. Buddy's chat continues
 using **Buddy model & connection**, including starting, stopping and relaying
@@ -148,13 +154,15 @@ requests. With a Jev toggle off, the corresponding existing gameplay model is us
 With **Use Jev for strategy** enabled, rewards follow this order:
 
 1. Take gold automatically, then open card rewards.
-2. Let Jev choose a card or skip the card reward.
+2. Let Jev choose a card or skip each card reward, one after another. Each reward
+   is tracked separately, so a skipped offer cannot reopen endlessly or hide a
+   second offer with the same label. Tracking survives Stop/Play in the same room.
 3. Back on the reward screen, take relics automatically.
 4. Take potions automatically while slots are free. With a full inventory, Jev
    chooses **replace potion slot N** (discard that held potion, then take the
    offered potion) or **skip this potion**. Each remaining potion is considered
    separately, so skipping one does not skip the others.
-5. Proceed automatically when rewards have been handled. Skipped potions stay
+5. Proceed automatically when rewards have been handled. Skipped cards/potions stay
    on the game screen until proceeding leaves them behind.
 
 Jev's shop brief and choices include only stocked items priced at or below current
@@ -172,16 +180,46 @@ shop have explicit descriptions. Buying one item keeps shopping open for another
 decision, with the budget and affordability refreshed each time. Player spending
 instructions remain part of every request.
 
+Rest sites use a dedicated question stating current and missing HP. At full HP,
+the Rest choice explicitly says it restores **0 HP**, and the question favors a
+useful upgrade unless a visible non-healing effect or player instruction justifies
+resting. When injured, Jev weighs recovery against the value of an upgrade and
+upcoming fights. Smith explains that the permanent upgrade is selected next;
+irrelevant potion discards are omitted. Rest and other enabled options stay
+available, including when Smith is disabled or relics change their value.
+Actual before/after card upgrade previews are included at the rest site. Reward
+questions compare a card with keeping the current deck, while upgrade questions
+compare the improvement itself, including cost and opening-hand effects.
+
 Each Jev request contains a fresh public brief and a typed choice among current
 legal actions. It includes player instructions, HP/resources, unique card rules,
 deck/pile composition, relics and counters, potion slots, visible options and
-upgrade previews, reachable map topology/boss, and combat intents/effects. Repeated
-cards and mechanic descriptions are compacted; only four recent action summaries
-and any failure feedback are carried forward. There is no growing chat history,
+upgrade previews, reachable map topology/boss for strategic choices, and combat
+intents/effects. Route summaries show distances to recovery/shops and elite
+exposure; combat omits those route calculations and deck-building scans. Combat
+choices show current Block (including zero), visible incoming damage, and fresh
+target-specific attack previews from the game's own calculation hooks. Target
+damage includes current modifiers but precedes Block and HP-loss/death effects;
+the prompt distinguishes per-hit previews from complete attack outcomes. Repeated cards and mechanic
+descriptions are compacted; four recent action summaries, observed HP/gold changes,
+last-fight HP/potion counts and any failure feedback are carried forward. There is no growing chat history,
 tool schema, or hidden RNG information in the request. Jev chooses one action at a
 time (a potion replacement includes its discard and pickup), then receives the
 settled state for its next decision. Commentary describes
 the selected action locally; Jev's choice API does not generate a prose rationale.
+
+With Jev combat enabled, a small local check first looks for a verified attack
+sequence that kills every enemy this turn. It supports the starting Strikes,
+Bash, Twin Strike, Unrelenting and Perfected Strike with audited combinations of
+Strength, Weak, Vulnerable, Slow, Vigor and free-attack effects. It accounts for
+Block, energy/stars, attack order and consumed bonuses, and requires its damage
+arithmetic to match native target previews. Unknown hooks, death phases, card
+modifications, multiplayer and incomplete state disable the check. It does not
+guess draws, random outcomes or potion combinations. Only the first legal action
+executes; the next settled snapshot is checked again. These decisions and their
+proof steps use `jev_lethal` trace events and make no model/review request. Other
+positions use Jev's combat question, which now checks kills before unnecessary
+Block. Optional Buddy review remains off by default.
 
 Every selected action passes the same freshness, guidance and stop checks as
 Buddy's decisions. Invalid answers stop play; rate limits and overloads have
@@ -189,7 +227,10 @@ bounded retries. Screens with over 255 legal options use grouped comparisons
 followed by a comparison of the winners. **Max context tokens** also bounds each
 complete Jev request; an oversized request stops with a settings hint rather than
 silently omitting choices or state. Token usage is recorded in `jev_response`
-trace events.
+trace events, together with full confidence/probability answers, model identity and
+prompt version. Reviews and executed outcomes link back to the decision snapshot.
+Confidence is a measure of the option distribution, not a win probability; the
+review thresholds are initial heuristics, not calibrated measures of playing skill.
 
 ### Combat Solver integration
 
@@ -360,6 +401,21 @@ brief's card IDs instead of repeating card names in each action. Hand-selection
 briefs render only the selectable cards and chosen names, avoiding a second,
 conflicting hand index list. Public inspection JSON retains full card details.
 
+Crystal Sphere briefs show a coordinate board, distinguish visible fragments from
+completed rewards, and list each known item's missing cells. Small clears one
+cell and big clears the centered 3×3; either costs one divination, while switching
+tools is free. The brief includes both tools' candidate previews and a geometric
+lower bound on the clicks needed to complete an item, flagging impossible finishes
+within the remaining budget. Every legal click's inspection summary reports newly
+cleared cells, unknown exposure, item progress, and known reward/curse completions.
+Unknown exposure is never labeled safe. The same information reaches Jev.
+
+Only items with a visible fragment are described; actual reward rolls stay unknown.
+Tool changes and reveals are submitted individually so the model can reassess each
+new board. The numeric divination counter gates both legal actions and native
+execution. At zero, Buddy waits for rewards or the enabled proceed button rather
+than treating still-visible cells as clickable.
+
 ## Verification
 
 Build and run the native test project:
@@ -374,12 +430,16 @@ command. Use `-- --dialogue` for ancient and Architect dialogue continuation and
 settlement, or `-- --solver` for Combat Solver hand-offs, card choices, and fallbacks.
 Use `-- --jev` for Jev request/response validation, compact state, independent
 credentials, decision routing, solver priority, and stop/steering checks.
+Use `-- --jev-combat` for the missed-lethal regression positions, sequencing,
+native-preview agreement, multiple targets and unsupported-effect fallbacks.
 Use `-- --jev-strategy` for ordered reward handling, potion replacement/skip,
 affordable shop choices, updated shop budgets and removal/exit decisions, and
 interruption between replacement steps.
 Use `-- --non-combat` for shared non-combat batches and adapter execution checks.
 Use `-- --merchant` for normal/fake merchant loading and automatic entry with
 Jev and the regular gameplay model, followed by purchases and leaving the shop.
+Use `-- --crystal` for Crystal Sphere fragment/completion regressions, tool geometry,
+curse overlap, hidden-information isolation, action mapping and final-click settlement.
 
 The tests target `net9.0` and need the .NET 9 runtime. They need neither
 Godot nor Python. The suite exercises both model transports with fake HTTP

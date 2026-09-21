@@ -345,7 +345,25 @@ namespace SpireBuddy.Game;
         if (_player != null)
         {
             result["player"] = BuildPlayerState(_player);
+            if (result["state_type"]?.ToString() == "rest_site" && result["rest_site"] is Dictionary<string, object?> rest)
+            {
+                var upgrades = new List<Dictionary<string, object?>>();
+                foreach (var card in _player.Deck.Cards.Where(c => c.IsUpgradable))
+                {
+                    var preview = SafeBuildUpgradedCardPreview(card);
+                    if (preview == null) continue;
+                    var entry = BuildCardInfo(card);
+                    entry["upgrade_description"] = SafeGetCardDescription(preview, MegaCrit.Sts2.Core.Entities.Cards.PileType.None);
+                    entry["upgrade_cost"] = GetCostDisplay(preview);
+                    entry["upgrade_star_cost"] = GetStarCostDisplay(preview);
+                    upgrades.Add(entry);
+                }
+                rest["upgrade_candidates"] = upgrades;
+            }
         }
+
+        if (!result.ContainsKey("map") && runState.Map != null && !TransitionInProgress())
+            result["map"] = BuildMapState(runState, interactive: false);
 
         return result;
     }

@@ -10,12 +10,16 @@ internal static class JevChecks
     internal static async Task Run()
     {
         Brief();
+        JevDecisionChecks.Run();
+        JevCombatChecks.Run();
         await Settings();
         await Routing();
+        await LethalRouting();
         await SolverPriority();
         await FreshnessAndStop();
         await Guidance();
         await NoOpFeedback();
+        await DecisionReview();
         await Protocol();
         Console.WriteLine("PASS Jev state, credentials, routing, solver priority, freshness, guidance, cancellation and API failures");
     }
@@ -63,8 +67,9 @@ internal static class JevChecks
         using var runtime = await Runtime(handler);
         var config = (await runtime.Dispatch("GET", "/status", null))["config"]!;
         Check(!config.Flag("use_jev_strategy") && !config.Flag("use_jev_combat"), "Jev defaults off");
+        Check(config["jev_review_uncertain"]?.GetValue<bool>() == false, "Buddy review defaults off until explicitly enabled");
         Check(config.Text("jev_endpoint") == JevClient.DefaultEndpoint && config.Text("jev_model") == JevClient.DefaultModel, "Jev API defaults");
-        await runtime.Dispatch("PUT", "/settings", new JsonObject { ["use_jev_strategy"] = true, ["jev_endpoint"] = " https://jev.test/custom/evaluate ", ["jev_model"] = " custom-jev ", ["jev_api_key"] = "jev-secret" });
+        await runtime.Dispatch("PUT", "/settings", new JsonObject { ["use_jev_strategy"] = true, ["jev_review_uncertain"] = true, ["jev_endpoint"] = " https://jev.test/custom/evaluate ", ["jev_model"] = " custom-jev ", ["jev_api_key"] = "jev-secret" });
         await runtime.Dispatch("PUT", "/settings", new JsonObject { ["api_key"] = BotRuntime.MaskedKey, ["jev_api_key"] = BotRuntime.MaskedKey });
         await runtime.Dispatch("PUT", "/settings", new JsonObject { ["jev_api_key"] = "" });
         config = (await runtime.Dispatch("GET", "/status", null))["config"]!;
@@ -73,6 +78,7 @@ internal static class JevChecks
         {
             var saved = (await restarted.Dispatch("GET", "/status", null))["config"]!;
             Check(saved.Flag("use_jev_strategy") && saved.Flag("has_jev_api_key") && saved.Text("jev_model") == "custom-jev", "Jev settings survive restart");
+            Check(saved.Flag("jev_review_uncertain"), "an explicit review opt-in survives restart");
         }
         await runtime.Dispatch("POST", "/settings/test-jev", new JsonObject { ["jev_endpoint"] = "https://draft.test/evaluate", ["jev_model"] = "draft-model", ["jev_api_key"] = BotRuntime.MaskedKey });
         var request = handler.Requests.Last();
@@ -134,6 +140,52 @@ internal static class JevChecks
             Check(status.Text("status") == "idle", "solver/Jev fight succeeds");
             Check(handler.Requests.Count == (available && !refused ? 0 : 1), "solver takes precedence; Jev handles missing/refused solver");
             Check(handler.Requests.All(r => r.Jev), "fallback does not call the old combat model");
+        }
+    }
+
+    static async Task LethalRouting()
+    {
+        foreach (bool changeAfterFirst in new[] { false, true })
+        {
+            using var handler = new Handler();
+            handler.Game.State = JevCombatChecks.Effigy();
+            handler.Game.AfterAction = command =>
+            {
+                Check(command.Text("action") == "play_card" && command.Num("card_index") == 1, "lethal selects the correct live hand index on both plays");
+                if (handler.Game.Commands == 2) return SessionHandler.Rewards();
+                var next = handler.Game.State.DeepClone();
+                next["player"]!["energy"] = 2;
+                next["player"]!["hand"]!.AsArray().RemoveAt(1);
+                next["player"]!["hand"]![1]!["index"] = 1;
+                next["battle"]!["enemies"]![0]!["hp"] = 9;
+                next["battle"]!["enemies"]![0]!["status"]![1]!["amount"] = 10;
+                if (changeAfterFirst) next["battle"]!["lethal_check_supported"] = false;
+                return next;
+            };
+            handler.RespondJev = (body, _) => Task.FromResult(Handler.Choice(body,
+                body["questions"]!["action0"]!["criteria"]!.AsObject().Single(p => p.Value!.Text("action").Contains("Strike")).Key));
+            using var runtime = await Runtime(handler, Enabled());
+            runtime.StartGameplay("Win this fight.", "fight");
+            var result = await Wait(runtime);
+            Check(result.Text("status") == "idle" && handler.Game.Commands == 2, "verified lethal completes through the normal action and settle pipeline");
+            Check(handler.Requests.Count == (changeAfterFirst ? 1 : 0) && handler.Requests.All(r => r.Jev), "no Buddy review; changed mechanics require a new Jev decision instead of a queued second attack");
+            var traces = System.IO.Directory.GetFiles(Path.Combine(handler.Directory, "runs"), "*.jsonl").SelectMany(File.ReadLines).Select(l => JsonNode.Parse(l)!).ToArray();
+            Check(traces.Count(t => t.Text("event") == "jev_lethal") == (changeAfterFirst ? 1 : 2), "local proof and execution source are auditable");
+        }
+        using (var handler = new Handler())
+        {
+            handler.Game.State = JevCombatChecks.Effigy();
+            using var runtime = await Runtime(handler, Enabled());
+            runtime.StartGameplay("Win this fight.", "fight");
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (!(await runtime.Dispatch("GET", "/status", null))["messages"].Items().Any(m => m.Text("event") == "agent_message" && m.Text("message").Contains("Strike")))
+            {
+                Check(DateTime.UtcNow < deadline, "lethal preview appears");
+                await Task.Delay(10);
+            }
+            await runtime.Dispatch("POST", "/stop", null);
+            await Wait(runtime);
+            Check(handler.Game.Commands == 0, "Stop during the lethal action preview prevents execution");
         }
     }
 
@@ -205,6 +257,54 @@ internal static class JevChecks
             Check(handler.Requests[1].Body.Text("state").Contains("[Feedback] Action [\"a0\"]"), "Jev sees which prior action failed");
         }
         finally { BotRuntime.MutationIdleWindow = previous; }
+    }
+
+    static async Task DecisionReview()
+    {
+        foreach (var mode in new[] { "default", "review", "disabled", "invalid", "stale", "stop" })
+        {
+            using var handler = new Handler();
+            var config = Enabled();
+            if (mode != "default") config["jev_review_uncertain"] = mode != "disabled";
+            using var runtime = await Runtime(handler, config);
+            handler.RespondJev = (body, _) =>
+            {
+                var response = Handler.Choice(body);
+                response["answers"]!["action0"]!["confidence"] = handler.Requests.Count == 1 ? 0.04 : 0.8;
+                response["answers"]!["action0"]!["probabilities"] = JsonNode.Parse(handler.Requests.Count == 1 ? """{"a0":0.51,"a1":0.49}""" : """{"a0":0.9,"a1":0.1}""");
+                return Task.FromResult(response);
+            };
+            handler.RespondBuddy = body =>
+            {
+                Check(body["tools"]!.AsArray().Count == 1 && body["tools"]![0].Text("name") == "choose_action", "a review has only an ID choice, no game or chat tools");
+                Check(body.WriteString().Contains("Avoid elites.") && body.WriteString().Contains("distribution is diffuse"), "review carries current guidance and reason");
+                if (mode == "stale") handler.Game.State["player"]!["hp"] = 29;
+                if (mode == "stop") runtime.Dispatch("POST", "/stop", null).GetAwaiter().GetResult();
+                return handler.Game.Call("choose_action", new JsonObject { ["action_id"] = mode == "invalid" ? "invented" : "a1" });
+            };
+            handler.Game.AfterAction = command =>
+            {
+                Check(command.Num("index") == (mode == "review" ? 1 : 0), "only the selected action from a current review or Jev decision is executed");
+                return Over();
+            };
+            runtime.StartGameplay("Win. Avoid elites.", "run");
+            var status = await Wait(runtime);
+            Check(status.Text("status") == (mode == "invalid" ? "error" : "idle"), "review status: " + mode + " " + status["agents"].Text("last_report"));
+            Check(handler.Game.Commands == (mode is "invalid" or "stop" ? 0 : 1), "invalid, stale or stopped reviews never execute their proposed action");
+            Check(handler.Requests.Count == (mode == "stale" ? 3 : mode is "default" or "disabled" ? 1 : 2), "default/disabled makes no review request; opt-in makes at most one per decision");
+            if (mode is not ("default" or "disabled")) Check(handler.Requests[1].Uri == "https://buddy.test/v1/responses" && handler.Requests[1].Key == "buddy-secret", "review uses configured Buddy provider");
+            var traces = Directory.GetFiles(Path.Combine(handler.Directory, "runs"), "*.jsonl").SelectMany(File.ReadLines).Select(l => JsonNode.Parse(l)!).ToList();
+            var answer = traces.First(t => t.Text("event") == "jev_response")["evaluations"]![0]!;
+            Check(JevContext.Number(answer["answers"]!["action0"]!["confidence"]) == 0.04, "fractional confidence is preserved");
+            Check(JevContext.Number(answer["answers"]!["action0"]!["probabilities"]!["a1"]) == 0.49 && answer.Text("prompt_version") == JevContext.PromptVersion, "distribution and prompt version are retained for replay");
+            if (mode == "review")
+            {
+                var review = traces.Single(t => t.Text("event") == "jev_review");
+                var outcome = traces.Single(t => t.Text("source") == "jev_review" && t.Flag("settled"));
+                Check(review.Text("original_action_id") == "a0" && review.Text("action_id") == "a1"
+                    && outcome.Text("decision_snapshot_id") == review.Text("snapshot_id"), "review and settled outcome link to the original decision");
+            }
+        }
     }
 
     static async Task Protocol()
