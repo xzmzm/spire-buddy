@@ -1,359 +1,167 @@
-# Native runtime
-
-`mod/SpireBuddy/Runtime` owns the controller and talks to the model endpoint. The
-Godot panel dispatches in-process calls; it does not use an HTTP control server.
-`mod/SpireBuddy/Game` reads the live game objects, filters observations, enumerates
-commands, and dispatches clicks or game commands on the main thread.
-`GameState` filters observations and enumerates commands, `ActionBatch`
-validates/re-resolves batches, `ModelClient` handles the two API formats, and
-`EnemyDecompiler` and `EventKnowledge` read static assembly source through ILSpy's DLL.
-`BotRuntime` owns lifecycle, settings, session history, operator chat and traces.
-`JevClient` provides an optional TypeSafe choice API for strategic and combat
-decisions; `GameState.Jev` builds its self-contained public brief.
-`JevStrategy` applies reward sequencing and builds potion replacement choices.
-See [the native guide](../mod/README.md) and the executable native tests.
-
 # Architecture
 
+Spire Buddy runs inside Slay the Spire 2 as a Godot C# mod. The panel, gameplay
+controller, model clients and static rule lookups share one process. The game
+adapter schedules live reads and commands on Godot's main thread; model requests
+run asynchronously. Installation and configuration are covered in
+[the mod guide](../mod/README.md).
+
+This document describes the 1.2.10 source synced from `codex/steam-release` at
+`d8e9943`. That source includes changes after the currently published Workshop
+package, which also carries the 1.2.10 version label.
+
 ```text
-Slay the Spire 2
-       │ live objects / Godot controls
-       ▼
-in-process game adapter (main thread)
-       │ public structured state
-       ▼
-legal action enumerator ──► public snapshot ──► model agent + tools
-       ▲                                           │
-       │                                  validated decision ID
-       └── settle read ◄── one mutation ◄── strict validator
+Game objects and controls (Godot main thread)
+                 |
+          ScheduledGameAdapter
+                 |
+       filtered public snapshot
+                 |
+      legal actions + decision brief
+                 |
+   automatic UI / model / Jev / solver
+                 |
+       validated action selection
+                 |
+     fresh snapshot and stop checks
+                 |
+       one command, then settle
 ```
 
-## Decision boundary
+## Code map
 
-Each decision is delivered as a compact line-based text brief: a short snapshot
-fingerprint (the first 16 hex characters of the SHA-256 over the canonical public
-JSON), delegated instructions and a durable plan, the public state rendered in
-compressed form, and the enumerated legal actions. Hand cards have one-based
-aliases (`c1`, `c2`); playable aliases/targets are grouped (`play: c1@2 c3`)
-without repeating card names. Other actions keep short summaries (`a5 end_turn`). Repeated pile cards are aggregated
-(`4x Defend`), pile order is not draw order, and keyword/mechanic definitions
-are deduplicated into a single trailing glossary.
-The uncompressed public JSON remains available through the read-only inspection
-tools. An action has a small model-facing ID and
-a controller-owned command. The model selects an ID and echoes the snapshot id;
-the controller resolves it to the already-enumerated command only after checking
-the snapshot fingerprint.
+Paths below are relative to `mod/SpireBuddy/`.
 
-This keeps strategic freedom on the model side without giving generated text a
-direct path to the game API.
+| Area | Responsibility |
+| --- | --- |
+| `Mod.cs` and panel code | Mod entry point, chat, settings and UI updates. |
+| `Game/GameBindings*.cs` | Read game objects and dispatch supported game commands. |
+| `Runtime/IGameAdapter.cs` | Main-thread scheduling, cancellation and final command validation. |
+| `Runtime/GameState*.cs` | Public-state filtering, legal actions, fingerprints and decision briefs. |
+| `Runtime/ActionBatch.cs` | Resolve and validate deterministic action sequences and inline card choices. |
+| `Runtime/BotRuntime.cs` | Chat and gameplay lifecycle, tool dispatch, decisions and traces. |
+| `Runtime/AgentSession.cs`, `BriefMemory.cs`, `CompactState.cs` | History, bounded context, definition reuse and compact state rendering. |
+| `Runtime/ModelClient.cs` | OpenAI-compatible Responses and Chat Completions transports. |
+| `Runtime/EnemyDecompiler.cs`, `EventKnowledge.cs` | Static enemy and event rules from the installed game assembly. |
+| `Runtime/Jev*.cs` | Optional TypeSafe choice API, decision criteria and uncertainty review. |
+| `Game/CombatSolverBridge.cs` | Optional Combat Solver handoff. |
 
-Crystal Sphere uses `CrystalSphereView`, a pure public-state geometry layer shared
-by both model paths. It renders a board and partial-item completion budgets,
-annotates every legal click with its current tool's coverage and known effects,
-and shows examples for both tools without pruning the legal action set. Big-tool
-completion costs are optimistic set-cover lower bounds, not executable or safe
-plans: they ignore unknown contents, curse exposure and centers cleared by earlier
-clicks. Only items already exposed through at least one visible cell are considered.
-The binding reads the numeric divination counter and tool, not localized label text
-or button outlines, and never reads hidden item assignments into the snapshot.
-Hover/highlight changes are excluded from decision fingerprints. Zero remaining
-divinations disables tool/cell actions while reward resolution settles. Each tool
-change or reveal is a separate decision.
+## Public state and legal actions
 
-The selected decision may contain up to 32 deterministic steps. Each `action_ids`
-entry is an advertised action or card alias, optionally followed by known hand
-choices: `["c3 c1", "a5"]` plays c3, chooses c1 for discard/exhaust, confirms,
-then executes a5. Targeted plays use `cN@enemy`; existing a-IDs remain accepted.
-References bind to the initial snapshot. Weakly held, process-local card instance
-IDs distinguish identical copies across reordered hands and selection holders.
-Inline selections use fresh legal actions, validate selection limits and chosen
-cards, and confirm once. Only a completed selection with the expected remaining
-hand, unchanged round and draw count can resume the original batch. Draws/random
-effects, mismatches, other screen changes or unavailable actions return control
-to the model. The step limit includes choices and confirmation. Explicit close,
-confirm, proceed and end-turn actions remain terminal.
+The controller builds a detached public snapshot before each decision. A recursive
+filter removes seeds, RNG state, draw/shuffle order, future reward rolls, hidden
+encounters and future rolled enemy moves. Current intents, pile contents without
+draw order, visible map topology and boss, and static game rules remain available.
 
-The controller handles routine UI transitions locally. It opens a merchant when
-the entry control is available, closes an empty or exhausted inventory, confirms
-a completed card or bundle selection preview, advances a mechanical dialogue
-step, takes a single map path, and proceeds when no strategic choice remains.
-The `auto_treasure` setting (on by default) makes treasure rooms fully
-mechanical: the chest is opened, each revealed relic is claimed in order, and
-the leaving proceed is the already-forced single remaining action; with the
-setting off, treasure relics stay model-owned. A
-map with an active Winged Boots charge stays model-controlled so the agent can
-choose to spend that charge; once the counter is exhausted, the single-path
-shortcut is available again.
+A snapshot ID is the first 16 hexadecimal characters of SHA-256 over canonical
+public JSON. Each legal action has a short model-facing ID and a controller-owned
+command. The model chooses an advertised ID and echoes the snapshot ID; generated
+text is never executed as a game command.
 
-Merchant entry is provider-independent, including the fake merchant event. Its
-native binding searches initialized mutable events for the local player's matching
-event; it does not call `LocalMutableEvent`, whose getter indexes a list that may
-still be empty during room asset loading. An absent or stale event produces a
-waiting snapshot with no shop controls, allowing the normal settle loop to wait
-until the merchant can open. Purchases use the same initialized-event lookup.
+Gameplay briefs include the current state, legal actions, instructions and plan.
+Hand cards have one-based aliases such as `c1`; targeted plays use `cN@enemy`.
+Playable aliases and targets are grouped without repeating card names. Pile cards
+and glossary definitions are deduplicated. Read-only inspection tools still return
+the full public JSON.
 
-The model initially receives a compact decision brief, then chooses which details
-to retrieve with read-only function tools. It can inspect state sections,
-list legal actions, query public enemy patterns and event branches, search discovered cards/relics/potions, and
-review recent transitions. It finishes by calling the typed `take_action` terminal
-tool. That call submits a decision to the controller; it does not mutate the game
-itself. The controller resolves, freshness-checks, and executes the selected action
-exactly once.
+A decision can contain up to 32 deterministic steps. Inline choices such as
+`["c3 c1", "a5"]` play the original c3, choose the original c1 for its hand-selection
+effect, confirm locally, then continue to a5. Process-local card identities keep
+identical copies distinct when hands reorder. Every step resolves against fresh
+legal actions. Draws, random effects, unexpected changes or unavailable actions end
+the batch; explicit close, confirm, proceed and end-turn actions are terminal.
 
-`lookup_enemy_moves` resolves the requested monster class from the installed
-`sts2.dll` and uses the ILSpy library in process. It returns exact matches first,
-falls back to up to five partial matches, and returns bounded decompiled source
-(at most 24,000 characters per match) after a 15-second lookup deadline. Results
-are cached in memory and on disk. The cache filename includes the assembly
-SHA-256, so a new game build regenerates entries on demand.
-When returned source calls `RandomBranchState.AddBranch`, the result also includes
-conditional `decompilation_notes` describing every overload, parameter meaning,
-and effective default so the model can distinguish cooldown from repeat limits.
-This source lookup is static: it does not load game objects or read the current
-intent, seed, RNG state, or a future rolled move. If no compatible decompiler is
-available, the tool reports the lookup error and the model reasons under uncertainty.
+The controller handles routine transitions locally: merchant entry, completed
+selections, mechanical dialogue, exhausted shops, a single map path and proceeding
+when no strategic choice remains. `auto_treasure` defaults on and opens chests and
+claims their revealed relics. An active Winged Boots charge keeps map choices under
+model control, even when only one ordinary path is available.
 
-`lookup_event` resolves a stable event ID (or English name) and follows syntax
-references to reward models, pools, powers and event helpers in the installed
-assembly. It returns source for the whole event, including later branches, plus
-referenced effects. Multiple matching names return candidates instead of choosing
-an arbitrary event. The 15-second lookup is bounded to 12 sources, 24,000 characters
-per source and 72,000 in total; omitted/failed/truncated sources make coverage
-explicitly partial. Successful bundles use a versioned, assembly-hash cache.
-General engine APIs, localization and dynamically selected types are not evaluated;
-the result is static rule evidence, not a guarantee of exhaustive effects or live rolls.
+Crystal Sphere uses the shared `CrystalSphereView` geometry layer. Only visible
+fragments contribute item information. Briefs show both tools' coverage and a lower
+bound on completion cost; unknown cells remain unknown. Each tool change or reveal
+is a separate decision, and the numeric divination counter gates legal clicks.
 
-Before a strategic event decision, `BotRuntime` loads the bundle for both providers
-outside the main-thread adapter and snapshot fingerprint. Regular histories retain
-it once per unchanged bundle and reinsert it on rollover; stateless Jev receives it
-on every evaluation. Briefs include the current event ID and visible option text
-keys, full deck rules and reachable public map topology. Shared instructions compare
-remaining costs and alternative exits from the current stage, without treating sunk
-HP/gold as a reason to continue. Chat also exposes the explicit lookup tool. No event
-is instantiated and no live reward, event counter or RNG field is read by the lookup.
-Execution still checks the original live fingerprint after any lookup/model delay.
+Orb briefs explicitly say that the first listed orb is the rightmost orb and the
+next to evoke. Dualcast evokes that orb twice.
 
-Before packet construction, a recursive information firewall removes keys associated
-with seeds, RNG state, draw/shuffle order, future rewards, future encounters, and
-already-rolled future enemy moves. Human-available information remains allowed:
-current intents, pile contents without order, the visible map and boss, and
-documented enemy move probabilities.
+## Gameplay decisions and model compatibility
 
-## Sessions
+The regular gameplay model can inspect public state, legal actions, discovered
+items, recent transitions, enemy rules and event rules. It submits a decision with
+`take_action`, alone after any inspections. Inspection calls execute serially; a
+`take_action` bundled with inspections is rejected with validation feedback.
+Submitting the tool does not itself mutate the game: the controller validates and
+executes the selected commands afterward.
 
-The independent `use_jev_strategy` and `use_jev_combat` settings replace requests
-to the respective gameplay model with Jev evaluations. The existing gameplay
-holders still retain instructions and receive Buddy's updates, but no model
-history or tool loop is opened for a Jev evaluation. Optional uncertainty review
-uses one isolated Buddy request with only a legal-ID selection tool. Combat Solver is checked before
-either combat provider, including combat-owned modal selections. A missing or
-refusing solver falls through to the configured combat provider. Chat always uses
-the normal Buddy session.
+`ModelClient` supports Responses and Chat Completions. Gameplay calls pass
+`requireToolCall: true`, which sends `tool_choice: "required"`. Ordinary chat and
+connection tests leave tool choice unforced. Strict tool schemas constrain the
+arguments, while controller-side checks still validate the selected action.
 
-With Jev strategy enabled, reward gold, opening card rewards, relic claims, potion
-claims into free slots, and proceeding after completion are local actions in that
-order. Jev still chooses the card (or skip) on the card screen. Full-slot potion
-rewards offer a replacement for each held slot plus a local skip. Skips are tracked
-per run by weakly assigned reward object IDs, so claimed rows may reindex without
-confusing identical potion or card rewards. A settled card pick/skip marks the
-originating reward as handled; the adapter matches visible card objects to their
-reward ID when starting from an already-open selection. A no-op selection is not
-marked. Reward tracking lives across Stop/Play and resets on a new run location.
-Skipped entries are omitted from subsequent
-Jev briefs, and the final proceed leaves them behind. Unrecognized reward types
-remain model-controlled. Other gameplay providers keep their existing behavior.
+If a successful response contains only text or no tool call, the controller reads
+the live state again. Changed state gets a fresh decision brief. An unchanged
+snapshot permits two corrective requests, for three attempts in total, before
+stopping with the last explanation. Prose is never converted into an action.
+`missing_tool_call` traces record the explanation and whether the state changed.
 
-Shop briefs and options filter sold items and prices above current gold before
-building the keyword glossary. Full-slot purchases become replacement choices;
-the ordinary purchase and standalone discard are withheld from Jev. Replacement
-choices contain controller-owned discard and take steps. Only the real commands
-reach the adapter, with its usual final freshness/cancellation checks for each.
-After the discard settles, the controller verifies the remaining player state,
-run, item identity and price, then re-resolves the claim/purchase against the fresh
-legal actions. Uncertain outcomes stop play without a retry. A definitive change
-ends the compound operation and returns to the normal fresh-decision loop.
+This source has no automatic fallback for providers that reject forced tool choice.
+Such an HTTP error occurs before the missing-tool-call recovery path, so a working
+chat or connection test does not establish gameplay compatibility. The configured
+gameplay endpoint must accept the required tool-choice request.
 
-Shop decisions use a dedicated question from `JevStrategy.Options`, starting with
-the current gold balance. It compares purchases and removal as parts of a possible
-sequence, alongside saving for a concrete need. Each purchase criterion includes
-its remaining budget; removal and exiting have explicit descriptions. This replaces
-the generic strategy question for shops, avoiding irrelevant reward instructions
-and keeping one choice request per decision. Combat and other strategy screens
-keep their own instructions. Action IDs and commands are unchanged.
+Tool rounds are bounded to 24 per decision, and a started play is bounded to 2,000
+decision-loop steps. Context and response validation failures also have bounded
+recovery paths. None of these retries replays an already submitted game mutation.
 
-Rest sites also use a dedicated `JevStrategy.Options` question, with current HP
-and the computed missing-HP cap. Full-health Rest criteria explicitly show zero
-healing; Smith criteria describe the permanent upgrade and subsequent selection.
-Annotations use stable `HEAL`/`SMITH` option IDs, not localized names or assumed
-positions. Only potion discards are filtered: all enabled rest-site options remain
-available so visible relic effects and player instructions can still favor Rest.
-Unknown HP is not replaced with a guessed heal amount, and no fixed healing
-percentage is assumed. Rest snapshots also contain safe upgraded card previews.
-The card-selection screen receives an upgrade-specific marginal-benefit question.
+## Enemy and event rule lookup
 
-Jev sends `state`, `model`, and typed `choice` questions to the exact configured
-`jev_endpoint`, authenticated solely by `jev_api_key`. Every action ID maps to a
-locally enumerated command. Groups contain at most 255 options, with a final
-comparison when multiple groups are needed. Responses are validated against the
-group's option set and converted into a decision bound locally to
-the original snapshot. The common execution loop then performs freshness,
-guidance, cancellation and action validation. Malformed answers never execute.
+Both knowledge tools use ILSpy in process against the installed `sts2.dll`.
+They read static source without creating events, rolling rewards, or inspecting
+live hidden state. Assembly-hash cache keys prevent stale rules after a game update.
+Lookup work runs outside the main-thread adapter; execution still checks freshness
+after the lookup and model response.
 
-`JevContext` describes choices with structured criteria, screen-specific questions,
-deck cost/support facts, visible attack totals and route distances/elite ranges.
-Dependency scans are explicitly incomplete and never ban cards. Visible attacks
-minus current Block are not treated as exact HP loss. The adapter includes public
-map/boss context off the map screen, using topology rather than stale hidden UI
-travel flags. Only the open map exposes executable travel actions.
+`lookup_enemy_moves` resolves an exact monster class first, then up to five partial
+matches. It has a 15-second deadline and a 24,000-character source limit per match.
+Conditional notes explain `RandomBranchState.AddBranch` overloads so cooldowns and
+repeat limits are not confused. Failures are returned as lookup errors.
 
-The Jev brief uses no history-dependent omissions. Unique held-card rules, public
-enemy/orb/pet effects, upgrade previews and reachable visible map topology supplement
-the existing compact renderer. Criteria carry the legal choices once; the brief
-omits its action list. Four recent action summaries with HP/gold changes, last-fight
-net HP and held-potion counts, and the last definitive failure feedback accompany
-current state. Last-fight memory also observes solver-controlled fights and resets
-at the menu or a floor regression. The existing context setting bounds
-the UTF-8 token estimate of the entire request. HTTP 429/529 evaluations retry at
-most twice with backoff (or bounded Retry-After); game mutations are never retried.
-`jev_response` traces retain selected IDs, complete answers (confidence and
-probabilities), model, usage and prompt version without credentials or full request
-payloads. Settled outcomes include the decision snapshot, action ID, source and
-before/after HP/gold. Jev and Buddy credentials are independently persisted, masked, and
-omitted from status responses.
+`lookup_event` resolves a stable event ID or English name and follows source
+references to cards, relics, powers, pools and event helpers. Ambiguous names return
+candidates. A bundle is limited to 15 seconds, 12 sources, 24,000 characters per
+source and 72,000 characters total. Missing or truncated sources explicitly mark
+partial coverage; successful bundles use a versioned, assembly-hash cache. Dynamic
+engine behavior and localization are not evaluated by the source traversal.
 
-`jev_review_uncertain` defaults off; saved opt-ins remain enabled. When enabled,
-it requests one independent review when choice
-confidence is below 0.20 for strategy or 0.30 for combat, the leading probability
-margin is at most 0.05, or visible facts flag an end turn with playable cards,
-unused energy and attacks exceeding Block, or Fortifier at zero Block. These are
-initial routing heuristics, not calibrated accuracy thresholds or action bans.
-The reviewer can preserve useful end-turn or potion-triggered exceptions. It uses
-the normal Buddy endpoint/model with a fresh bounded context, can only choose a
-current action ID, and cannot execute game tools. No recursive review is possible.
-Malformed answers stop without executing; normal cancellation, guidance and
-snapshot freshness validation applies afterward. `jev_review` traces record the
-original and final IDs, reason, model, usage and prompt version.
+Before a strategic event decision, both regular gameplay and Jev receive the
+current event's rule bundle. Regular histories retain an unchanged bundle and
+restore it after context rollover; stateless Jev receives it on every evaluation.
+Briefs include the current stage, visible option keys, full deck rules, held items
+and reachable public map context. Shared instructions compare remaining costs and
+alternative exits; earlier HP or gold costs do not justify continuing by themselves.
+Chat also exposes explicit event lookup.
 
-`BotRuntime` has three agent roles with independently bounded sessions:
+## Sessions, compact state and context
 
-1. Buddy is the persistent main chat agent. A serial queue preserves submission
-   order and replays complete assistant/tool/reasoning transcripts between messages.
-2. Buddy starts at most one game subagent. It handles menus, paths, events, shops,
-   rewards and run strategy. A run assignment normally ends at game over, but can
-   also end because the player stopped it, an error occurred, or the step limit
-   was reached. A fight assignment requires active combat and ends before rewards
-   or navigation.
-3. On entering `monster`, `elite`, `boss`, or `hand_select`, the game controller
-   launches at most one combat subagent with the game's instructions and plan.
-   The game agent waits while combat owns decisions. Leaving combat returns a
-   tactical report to the game agent; the next combat gets a fresh session.
+Buddy is the persistent chat session. Its serial message queue preserves complete
+assistant, tool and reasoning transcripts. It coordinates at most one strategy
+session and one combat session through `start_game`, `message_agent`, `stop_game`
+and `inspect_agents`. Chat has read-only knowledge tools and no `take_action`.
 
-A single gameplay worker owns action execution, so game and combat agents cannot
-mutate concurrently. Buddy can continue chatting while that worker reasons or acts.
-Its `start_game`, `message_agent`, `stop_game`, and `inspect_agents` tools coordinate
-subagents. Game-directed guidance also reaches an active combat agent. New guidance
-invalidates an in-flight decision before another action can execute. User chat is
-not automatically copied into gameplay; Buddy relays relevant instructions. The
-game agent can also change between run and fight scope when Buddy relays a new
-request. Successful control operations remain idempotent across context retries.
+One gameplay worker owns all execution. Strategy handles menus, navigation, events,
+shops and rewards; an active combat session owns combat and its card selections.
+Strategy waits for combat, and each new fight gets a fresh combat session. Run scope
+normally ends at game over; fight scope ends before rewards or navigation. The
+player sees one Buddy voice and can keep chatting while gameplay runs.
 
-`AgentSession` owns history, cache identity, state-diff memory and token accounting.
-Responses uses `store = false` and replays encrypted reasoning, calls and results;
-Chat Completions replays equivalent assistant/tool messages. Each request checks
-both a conservative UTF-8 estimate (including tool schemas) and reported token usage.
-On overflow Buddy starts a new session with current public state and previous chats.
-If that does not fit, it keeps only state and the latest user message; finally it
-tries state alone. Game and combat sessions restart with current public state,
-legal actions, delegated instructions and their plan. All retries are bounded;
-state that cannot fit produces an actionable error. Provider context-limit errors
-use the same fallback. Restarting clears whole tool protocols and definition memory,
-never leaving orphaned tool results. The visible chat feed survives rollovers,
-settings changes, stopping and game-state changes.
+Buddy relays relevant guidance to gameplay rather than copying every chat message.
+New guidance invalidates an in-flight decision. A literal `stop` or `停` cancels play
+immediately without a model call. A control epoch prevents earlier queued or
+in-flight chat responses from restarting play afterward. Conversation history
+survives stopping.
 
-After the controller executes `take_action`, its result is returned to that same
-conversation on the next decision. The result carries per-action outcomes (command,
-short summary, settled flag, and the post-action snapshot fingerprint) plus an
-advisory `legal_actions` hint (IDs and summaries only) for the new snapshot, so the
-model can decide without another `list_legal_actions` round trip. Full post-action
-state is not embedded in outcomes; the next decision turn renders a fresh text
-brief. The controller waits for a settled read before each decision and
-revalidates the authoritative legal actions immediately before every mutation.
-`list_legal_actions` always re-reads the live state, even when cached purchases
-or other actions still look available. A changed snapshot starts a fresh decision
-with the correct screen and combat owner. Empty/discard-only inspections wait
-600 ms before that read.
-Gameplay requests require tool calls. If a provider still returns only text or
-an empty reply, the controller checks the live state and allows two corrective
-requests on an unchanged snapshot. It never turns prose into an action. Repeated
-failures stop with the last model explanation, and `missing_tool_call` traces
-retain that explanation and whether the decision state changed. Ordinary chat
-and connection tests can still return text without tools.
-The trace writer serializes every JSONL record under the runtime lock and adds
-an ISO 8601 local `timestamp` with millisecond precision and timezone offset,
-plus monotonic `elapsed_ms` measured from creation of the current play log.
-Timing is attached to a separate copy, keeping it out of gameplay snapshots,
-fingerprints, and model tool results. Commentary timestamps mark emission;
-action-outcome timestamps mark settlement. Each new play log restarts the clock.
-Empty or discard-only snapshots are still transitioning: the controller keeps
-polling until a non-discard action is available (or the run ends), within its
-30-second settle timeout. This lets delayed proceed buttons enter the action
-result and the existing automatic navigation path without a model refresh call.
-Shops also expose the inventory UI's input-blocked flag. While Lord's Parasol
-collects shop stock automatically, that flag suppresses all shop actions and
-prevents a partial inventory from settling. The following free card-removal
-selection is a separate, actionable screen.
-Ancient-event snapshots include the current dialogue line's position: the body,
-options and enabled hitbox can remain identical across consecutive lines. This
-lets each dialogue advance settle on observed progress before the next automatic
-click, without relying on animation frames or reading upcoming dialogue.
-Event options also report their text key: multi-line events such as The Architect
-regenerate an identical-looking single option for every dialogue line (same title,
-description and flags, even for the final run-winning choice), and the key carries
-the line position so each consumed click settles the same way.
-A settle wait that ends with the screen still interactive and byte-identical to
-the pre-click snapshot is a silent no-op click - the game accepted the input but
-refused its effect, e.g. a potion reward with full potion slots, whose button
-stays enabled. The mutation itself is still never retried; the action comes back
-as a rejected submission (`executed=false`, unchanged snapshot) and the model
-re-decides. Claiming a potion reward with full slots is rejected up front with
-the same recovery. Three consecutive ineffective clicks on one snapshot stop
-play with an explicit report instead of looping.
-A queued operation that is cancelled, times out, or sees a changed snapshot is
-rejected without retrying the mutation.
-
-## Prompt caching
-
-Stable agent instructions and tool schemas start each session. Both API modes
-replay their complete history so providers can reuse the prefix. Requests keep the
-same `prompt_cache_key` until that agent's session rolls over. Responses requests
-for GPT-5.6 also specify the existing 30-minute cache TTL. Usage is recorded in
-model-response traces.
-
-Ordinary settings saves preserve Buddy's history and cache identity. Effective
-personality changes append a user instruction before the next chat message;
-unchanged settings and inactive custom descriptions add no note. New sessions
-and context rollovers bake the current personality into the initial prompt.
-Endpoint, model, or API-format changes rebuild Buddy from completed chats so
-provider-specific tool and reasoning items do not cross those boundaries.
-
-## Operator chat
-
-The panel has one empty composer and shows example prompts in the initial chat
-window, including `Win with ironclad`, `win this fight`, `continue this run`,
-`What should I do next?`, `What are my potion reward chances?`,
-`What moves can this enemy use?`, and `What should I pick from these rewards?`.
-It also suggests asking which card, relic, path, or shop option is best. There is
-no goal setting or separate Start control; the player uses natural-language
-messages in the composer and Buddy decides whether to answer, steer active play,
-or start play.
-
-Buddy reads fresh public state before each user turn. The first turn includes the
-state and play status. `CompactState` renders repeated object arrays as tables:
-field names occur once, and consecutive identical items share a `*N` repeat row.
-Map coordinates and children remain exact; deck variants, card/choice indices,
-false values, nulls, empty collections and absent fields remain distinct. The
-inline legend defines the format on every full anchor, including a rollover.
-For example:
+`CompactState` renders repeated object arrays with a column header and rows:
 
 ```text
 nodes[2]{col,row,type,children}:
@@ -361,78 +169,105 @@ nodes[2]{col,row,type,children}:
   [4,3,"Monster",[[5,4]]]
 ```
 
-Each row follows the column header. `~` and omitted trailing cells mean absent
-properties; `null` remains an explicit JSON null. `*5 [values]` represents five
-consecutive identical objects in their original array positions. Strings and
-nested cell values retain JSON escaping. The renderer falls back to ordinary
-JSON when it uses fewer UTF-8 bytes, including the legend. Canonical snapshots,
-fingerprints, tool responses and the diff baseline retain their original JSON.
-Indented `-` list items allow nested patch values to use tables as well, so a
-changed deck does not revert to repeated card JSON inside a `set` operation.
-Gameplay route briefs use one adjacency-list header and retain unchanged topology
-within that agent's history; fresh histories and stateless Jev always receive it.
+The format preserves array positions, card variants, JSON escaping, false values,
+nulls and empty collections. `~` or omitted trailing cells mean an absent property;
+`*5 [values]` means five consecutive identical objects. A legend accompanies full
+anchors. Ordinary JSON is used when it is smaller, including the legend cost.
+Canonical snapshots, fingerprints, tool results and diff baselines remain JSON.
 
-Identical observations add nothing. Small changes use
-JSON Pointer `set`/`remove` operations, including deletions; if a replacement is
-smaller, it sends the full state. Unchanged deck or relic data is not repeatedly
-prefixed to follow-up questions. State is filtered through the same information
-firewall used by gameplay. Tool rounds refresh the diff baseline as well, so a
-change back to an earlier value is reported correctly after an inspection.
+Chat omits unchanged state and sends JSON Pointer `set`/`remove` changes when smaller
+than a full replacement. Nested patch values can use compact tables. Tool rounds
+refresh the diff baseline, and play-status changes re-anchor the full state. A
+finished play's report is queued in conversation order for the next user turn.
 
-When play ends between turns, the final report is queued as a `Play update` note
-and delivered in conversation order on the next user message, and any
-play-status change (start, stop, run end) re-anchors the session by resending
-the full state even when the raw snapshot is unchanged. A request that arrives
-right after a finished run therefore always sees both the end-of-run brief and
-the current menu picture, never a bare message over stale run discussion.
+Gameplay histories reuse unchanged instructions, deck and relic definitions,
+glossary entries and route adjacency. Tactical state, legal actions and snapshot
+IDs remain present. New histories receive complete context; stateless Jev briefs
+never depend on previous omissions.
 
-A literal `stop` is handled immediately without a model request, cancelling gameplay
-reasoning and queued actions while retaining Buddy's conversation. A control epoch
-prevents older queued or in-flight chat responses from restarting play afterward.
-Other stop phrasing can use Buddy's `stop_game` tool. Every action still checks stop
-and freshness on the game thread; an already executed action is never retried.
+`AgentSession` tracks a stable prompt-cache identity, history and token usage.
+Responses uses `store = false` and replays encrypted reasoning, calls and results;
+Chat Completions replays the equivalent message protocol. Stable instructions and
+tool schemas lead the history, and `prompt_cache_key` stays stable until rollover.
 
-Buddy keeps read-only tools for public state, enemy rules, discovered cards/relics/potions,
-recent actions, run history statistics and game odds. It has no `take_action` tool.
-Run-history statistics and odds use `ReadKnowledge`, cached for 30 seconds. Replies
-and relayed gameplay commentary render as Markdown in the panel.
+A conservative UTF-8 estimate and reported usage bound context. On overflow, chat
+restarts with current state and completed conversation, then tries state with only
+the latest message, then state alone. Gameplay restarts with current state, legal actions,
+instructions, plan and event rules. Whole tool protocols are retained or discarded
+together, preventing orphaned results. Unfit state produces an error after bounded
+retries. Endpoint, model or API-format changes rebuild compatible history; effective
+personality changes append instructions to the existing conversation.
 
-## Loop invariants
+## Optional Jev and Combat Solver paths
 
-1. Read a fresh state.
-2. Enumerate legal actions from that exact state.
-3. Build a bounded packet.
-4. Request one decision through the typed `take_action` terminal tool and validate it.
-5. Resolve the selected action ID from the current candidate table.
-6. Send the mutation exactly once on the game thread. A definitive rejection is
-   returned to the same agent session so it can choose again; uncertain failures
-   still stop the controller to prevent duplicate mutations.
-7. Poll until the public state fingerprint changes.
-8. Write runtime events, model usage, stale-decision records, and per-action
-   outcomes to JSONL; full before-and-after public snapshots are not stored.
+`use_jev_strategy` and `use_jev_combat` independently select TypeSafe's choice API
+for the corresponding decisions. Jev has its own endpoint, model and API key. Chat
+continues to use Buddy. Combat Solver is checked before either combat provider,
+including combat-owned modal choices; an unavailable or refusing solver falls
+through to the configured provider.
 
-If a provider mistakenly emits prose instead of calling `take_action`, the client
-makes one repair request that forces only that tool. An invalid model answer can then
-be corrected with validation feedback. A game mutation cannot be retried because a
-transport failure may happen after the game accepted it.
+Each Jev evaluation is stateless and includes the current public brief and typed
+choice criteria. Groups contain at most 255 options, with a final comparison when
+needed. Returned IDs must belong to their group. The selected command then follows
+the same freshness, cancellation and execution checks as a regular model decision.
+HTTP 429/529 evaluations retry at most twice with backoff; mutations are not retried.
 
-## Extension points
+Jev's brief includes deck dependencies, upgrade previews, public enemy/orb effects,
+route distances, recent actions and a small last-fight memory. Dependency scans
+remain incomplete evidence, and visible attacks minus Block are not represented
+as exact future HP loss.
 
-`IGameAdapter` is the boundary between the worker and the game thread:
+`JevStrategy` sequences routine reward handling and builds potion replacement
+choices. Replacements use controller-owned discard and claim/purchase steps;
+after discarding, the controller checks the changed player state and re-resolves
+the next command. Shop and rest-site questions use the current budget and actual
+available choices. Unknown reward types stay model-controlled.
 
-```csharp
-interface IGameAdapter
-{
-    Task<JsonNode> ReadState(CancellationToken ct);
-    Task<JsonNode> Execute(JsonNode command, string expectedSnapshot,
-        Func<bool> mayExecute, CancellationToken ct);
-    Task<JsonNode> Search(string query, string itemType, CancellationToken ct);
-    Task<JsonNode> ReadKnowledge(CancellationToken ct);
-}
-```
+Optional `jev_review_uncertain` defaults off. When enabled, uncertainty or selected
+visible combat facts can trigger one isolated Buddy review that can choose only
+a current legal ID. It cannot execute actions or start another review. Both
+original and reviewed choices are traced before normal freshness validation.
 
-The concrete adapter schedules every read and mutation onto Godot's main-thread
-queue. It takes a fresh public snapshot immediately before a mutation, compares its
-fingerprint with the model's snapshot, checks that the command is still enumerated,
-and then invokes the game binding exactly once. A queued operation that is cancelled
-or times out is skipped when a later frame drains the queue.
+## Execution and settlement
+
+`ScheduledGameAdapter` is the boundary between background work and game objects.
+Immediately before every mutation, on the game thread, it checks cancellation and
+guidance, reads fresh public state, compares the expected fingerprint, and verifies
+that the command is still legal. It then invokes that command once. Cancelled or
+timed-out queued operations are skipped if a later frame drains the queue.
+
+After dispatch, the controller polls for a changed, ready state. Loading frames,
+empty/discard-only screens and input-blocked shops wait within the settle timeout.
+Merchant bindings tolerate events that have not finished initialization. Dialogue
+positions and event option keys distinguish consecutive identical-looking lines.
+Player-opened overlays wait for the player to close them and remain cancellable.
+
+An interactive screen that stays unchanged after settlement is a definitive no-op:
+the outcome reports `executed=false`, and a new decision can choose again. Three
+consecutive ineffective clicks on one snapshot stop play. An uncertain mutation
+outcome stops immediately to prevent duplicate commands.
+
+The next decision returns per-action outcomes and a lightweight legal-action hint
+to the same model conversation, followed by a fresh state brief. Full before/after
+snapshots are not embedded in those outcomes. `list_legal_actions` always reads
+live state; an inspection that finds changed state restarts the decision with the
+correct strategy or combat owner.
+
+## Persistence and verification
+
+Settings, assembly-keyed rule caches and run traces live under
+`user://spire-buddy/`. Each started or resumed play writes a new `runs/*.jsonl` log.
+Traces include usage, decisions, stale-state and missing-tool-call records, outcomes,
+solver handoffs, stops and errors; they omit full before/after snapshots and
+credentials. Each record has a local ISO 8601 `timestamp` and monotonic `elapsed_ms`
+for ordering and latency diagnostics. Commentary is timed when emitted; outcomes
+are timed after settlement.
+
+The .NET 9 native suite exercises both model transports with fake HTTP services
+and adapters. It covers public-state filtering, validation, compact state, context
+rollover, stop/steering races, bounded recovery, optional providers and event rules.
+`-- --events` and `-- --compact-state` select the new rule and state checks.
+`STS2_GAME_ASSEMBLY` additionally enables installed-game enemy and event source
+checks. Commands and other selectors are in [Verification](../mod/README.md#verification).
+Live Godot bindings, mod-loader integration and the panel still need an installed
+game smoke test after a restart.

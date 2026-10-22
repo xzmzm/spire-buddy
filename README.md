@@ -3,8 +3,8 @@
 Spire Buddy is a self-contained C# game mod with an in-game chat and settings
 panel. It reads the live game through an in-process adapter, sends requests
 directly to a configured OpenAI-compatible endpoint, validates every game action,
-and performs enemy decompilation in process. No companion service or browser
-dashboard is required.
+and looks up static enemy and event rules in process. No companion service or
+browser dashboard is required.
 
 Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API for
 run strategy, combat, or both, with a separate endpoint, model and API key.
@@ -49,20 +49,24 @@ or run traces.
 
 ## Use Buddy
 
-The initial chat window includes examples for starting a run, winning the current
-fight, continuing a run, asking what to do next, checking potion odds, looking up
-enemy moves, choosing rewards, and comparing card, relic, path, or shop options.
-Questions do not start play by themselves. Say **continue this run** or
-**win this fight** to control play, and say **stop** to cancel play while keeping
-Buddy available for conversation.
+Ask what to do next, compare rewards or shop options, look up enemy moves and
+event branches, or check potion odds. Questions do not start play by themselves.
+Say **continue this run** or **win this fight** to control play, and say **stop**
+to cancel play while keeping Buddy available for conversation.
 
-Buddy can answer questions about the current state, discovered cards, relics and potions,
-static enemy rules, recent actions, saved run statistics, and potion reward odds.
+Buddy can answer questions about the current state, discovered cards, relics and
+potions, static enemy and event rules, recent actions, saved run statistics, and
+potion reward odds.
 It keeps one player-facing voice, preserves the chat conversation during the game
 process, and sends only changed public state on follow-up turns. Replies and
 gameplay commentary render as Markdown in the panel. The panel UI follows the
 game's language — Chinese when the game runs in Chinese, English otherwise —
 and **stop** (or **停**) cancels play.
+
+Event decisions include static branch and reward rules from the installed game.
+Compact state tables and reused route context reduce repeated information while
+preserving public details. Orb guidance identifies the rightmost orb as the next
+to evoke, including for Dualcast.
 
 See [the mod guide](mod/README.md) for configuration, controls, safety,
 installation paths, and verification. The implementation overview is in
@@ -80,5 +84,8 @@ dotnet run --project mod/SpireBuddy.Tests -c Release
 ```
 
 The tests target `net9.0`; install the .NET 9 runtime to run them. The test
-project does not need Godot or the game assemblies unless you also run its
-optional real-decompilation check.
+project does not need Godot or the game assemblies for its regular checks.
+Append `-- --events` or `-- --compact-state` to run just those checks. Set
+`STS2_GAME_ASSEMBLY` to the installed `sts2.dll` to also verify enemy and event
+source lookup against the game. See the [verification guide](mod/README.md#verification)
+for commands and other test selectors.
