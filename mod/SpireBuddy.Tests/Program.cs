@@ -10,8 +10,10 @@ if (args.Contains("--solver")) { await SolverChecks.Run(); return; }
 if (args.Contains("--jev")) { await JevChecks.Run(); return; }
 if (args.Contains("--jev-combat")) { JevCombatChecks.Run(); return; }
 if (args.Contains("--jev-strategy")) { await JevStrategyChecks.Run(); return; }
+if (args.Contains("--selections")) { await JevStrategyChecks.UpgradeSelections(); return; }
 if (args.Contains("--non-combat")) { await NonCombatBatchChecks.Run(); await AdapterChecks.Run(); return; }
 if (args.Contains("--merchant")) { await MerchantChecks.Run(); return; }
+if (args.Contains("--tool-recovery")) { await ToolRecoveryChecks.Run(); return; }
 if (args.Contains("--crystal")) { await CrystalSphereChecks.Run(); return; }
 await CardChoiceChecks.Run();
 if (args.Contains("--card-choices")) return;
@@ -20,6 +22,7 @@ await AdapterChecks.Run();
 BriefChecks.Run();
 await BriefChecks.Histories();
 await SessionChecks.Run();
+await ToolRecoveryChecks.Run();
 await SettleChecks.Run();
 await DialogueChecks.Run();
 await SolverChecks.Run();
@@ -186,10 +189,10 @@ using (var retryRuntime = new BotRuntime(Path.Combine(Path.GetTempPath(), "spire
     Check(GameState.Actions(refreshed)[0]!["command"].Text("action") == "proceed", "retry discovers proceed");
     Check(GameState.Fingerprint(refreshed) != GameState.Fingerprint(resting), "retry changes snapshot identity");
     await retryRuntime.RetryLegalSnapshot(refreshed);
-    Check(retryReads == 1, "suitable actions do not cause a retry");
+    Check(retryReads == 2, "explicit legal-action inspections refresh even when cached actions look suitable");
     rested = resting.DeepClone();
     refreshed = await retryRuntime.RetryLegalSnapshot(resting);
-    Check(retryReads == 2 && !GameState.HasSuitableActions(GameState.Actions(refreshed)), "unchanged retry returns without looping or discarding");
+    Check(retryReads == 3 && !GameState.HasSuitableActions(GameState.Actions(refreshed)), "unchanged retry returns without looping or discarding");
 }
 // A card can have identical visible frames while its delayed orb/relic hook runs.
 // Do not ask the model about that partial state, even when end turn looks legal.

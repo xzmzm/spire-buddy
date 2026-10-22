@@ -258,10 +258,30 @@ model can decide without another `list_legal_actions` round trip. Full post-acti
 state is not embedded in outcomes; the next decision turn renders a fresh text
 brief. The controller waits for a settled read before each decision and
 revalidates the authoritative legal actions immediately before every mutation.
+`list_legal_actions` always re-reads the live state, even when cached purchases
+or other actions still look available. A changed snapshot starts a fresh decision
+with the correct screen and combat owner. Empty/discard-only inspections wait
+600 ms before that read.
+Gameplay requests require tool calls. If a provider still returns only text or
+an empty reply, the controller checks the live state and allows two corrective
+requests on an unchanged snapshot. It never turns prose into an action. Repeated
+failures stop with the last model explanation, and `missing_tool_call` traces
+retain that explanation and whether the decision state changed. Ordinary chat
+and connection tests can still return text without tools.
+The trace writer serializes every JSONL record under the runtime lock and adds
+an ISO 8601 local `timestamp` with millisecond precision and timezone offset,
+plus monotonic `elapsed_ms` measured from creation of the current play log.
+Timing is attached to a separate copy, keeping it out of gameplay snapshots,
+fingerprints, and model tool results. Commentary timestamps mark emission;
+action-outcome timestamps mark settlement. Each new play log restarts the clock.
 Empty or discard-only snapshots are still transitioning: the controller keeps
 polling until a non-discard action is available (or the run ends), within its
 30-second settle timeout. This lets delayed proceed buttons enter the action
 result and the existing automatic navigation path without a model refresh call.
+Shops also expose the inventory UI's input-blocked flag. While Lord's Parasol
+collects shop stock automatically, that flag suppresses all shop actions and
+prevents a partial inventory from settling. The following free card-removal
+selection is a separate, actionable screen.
 Ancient-event snapshots include the current dialogue line's position: the body,
 options and enabled hitbox can remain identical across consecutive lines. This
 lets each dialogue advance settle on observed progress before the next automatic

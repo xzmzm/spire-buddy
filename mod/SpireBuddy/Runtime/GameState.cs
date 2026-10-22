@@ -71,6 +71,7 @@ internal static partial class GameState
         }
         var kind = s.Text("state_type"); var data = s[kind];
         if (Combat(s) && s["battle"].Flag("actions_pending")) return result;
+        if ((kind == "shop" ? data : kind == "fake_merchant" ? data?["shop"] : null).Flag("input_blocked")) return result;
         if (s["legal_actions"] is JsonArray supplied) return (JsonArray)supplied.DeepClone();
         switch (kind)
         {
@@ -247,7 +248,7 @@ internal static partial class GameState
     // sections, so only verb, identifying name/slot and target are repeated here.
     internal static string Summary(string action, JsonNode? item, JsonNode? value)
     {
-        var text = new StringBuilder(Verb(action));
+        var text = new StringBuilder(action is "select_card" or "combat_select_card" && item.Flag("selected") ? "deselect" : Verb(action));
         var name = new[] { "name", "title", "card_name", "relic_name", "potion_name", "type" }.Select(k => item.Text(k)).FirstOrDefault(n => n.Length > 0) ?? value?.ToString();
         if (!string.IsNullOrEmpty(name)) text.Append(' ').Append(name);
         var slot = item?["index"] ?? item?["slot"];

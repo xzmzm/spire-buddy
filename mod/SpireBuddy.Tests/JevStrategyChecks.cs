@@ -50,10 +50,104 @@ internal static class JevStrategyChecks
         await ShopRun();
         await ShopBudgetQuestions();
         await RestQuestions();
+        await UpgradeSelections();
         await InterruptedReplacement(stop: true);
         await InterruptedReplacement(stop: false);
         await DisabledStrategy();
         Console.WriteLine("PASS Jev reward order, separate card rewards/skip/resume, potion replacement/skip, shop budgets/removal/exit, rest-site questions, and interrupted replacements");
+    }
+
+    static JsonNode MultiUpgrade(int selected = 0)
+    {
+        var cards = new JsonArray();
+        foreach (var name in new[] { "蛇妖", "Backflip", "Backflip", "Neutralize", "Strike", "Defend" })
+            cards.Add(new JsonObject { ["index"] = cards.Count, ["name"] = name, ["selected"] = cards.Count < selected,
+                ["description"] = "Base effect.", ["upgrade_description"] = "Improved effect." });
+        return new JsonObject
+        {
+            ["state_type"] = "card_select", ["player"] = Player(),
+            ["card_select"] = new JsonObject { ["screen_type"] = "upgrade", ["prompt"] = "Choose cards to upgrade.",
+                ["min_select"] = 4, ["max_select"] = 4, ["selected_count"] = selected,
+                ["preview_showing"] = false, ["can_confirm"] = false, ["can_cancel"] = false, ["cards"] = cards }
+        };
+    }
+
+    internal static async Task UpgradeSelections()
+    {
+        // Always prefer the first offered card, reproducing an evaluator that
+        // keeps ranking Serpent Form highest on every intermediate snapshot.
+        await MultiUpgradeRun(0);
+        await MultiUpgradeRun(1);
+        await MultiUpgradeRun(3);
+
+        var state = MultiUpgrade(1);
+        var policy = new JevStrategy();
+        var legal = GameState.Actions(state);
+        var before = state.WriteString(); var legalBefore = legal.WriteString();
+        var options = policy.Prepare(state, legal);
+        Check(options.Actions.Count == 5 && options.Automatic == null, "remaining upgrade choices stay strategic");
+        Check(options.Actions.Items().All(a => a["command"].Num("index") != 0), "selected upgrade cannot be toggled off by Jev");
+        Check(options.Actions.Items().Count(a => a.Text("summary").Contains("Backflip")) == 2, "identical cards remain distinct upgrade choices");
+        Check(options.Question!.Contains("1 of 4") && options.Question.Contains("3 more") && options.Question.Contains("deselect"), "upgrade question explains count and toggle semantics");
+        Check(state.WriteString() == before && legal.WriteString() == legalBefore, "selection policy preserves the public snapshot and legal actions");
+        Check(legal[0].Text("summary").StartsWith("deselect ") && legal[1].Text("summary").StartsWith("select "), "regular model distinguishes select from deselect");
+        var described = JevContext.DescribeActions(state, legal);
+        Check(described[0]!["jev_criteria"].Text("effect").Contains("Deselect") && described[1]!["jev_criteria"].Text("effect").Contains("Select"), "selection criteria describe the actual toggle effect");
+        var brief = GameState.JevBrief(state, "Win.", "", new JsonArray(), "");
+        Check(brief.Contains("selected 1") && brief.Contains("pick 4-4") && brief.Contains("*selected*"), "selection progress reaches the stateless brief");
+
+        // Only a known, incomplete fixed-size multi-upgrade uses this policy.
+        // Variable-size/removal/hand choices must still allow changing a pick.
+        foreach (var variant in new[] { "single", "variable", "unknown_limit", "unknown_selection", "inconsistent_count", "remove", "preview", "hand" })
+        {
+            var other = MultiUpgrade(1); var data = other["card_select"]!;
+            switch (variant)
+            {
+                case "single": data["min_select"] = 1; data["max_select"] = 1; break;
+                case "variable": data["min_select"] = 0; break;
+                case "unknown_limit": data.AsObject().Remove("max_select"); break;
+                case "unknown_selection": data["cards"]![0]!.AsObject().Remove("selected"); break;
+                case "inconsistent_count": data["selected_count"] = 2; break;
+                case "remove": data["screen_type"] = "remove"; break;
+                case "preview": data["preview_showing"] = true; data["can_confirm"] = true; data["can_cancel"] = true; break;
+                case "hand": other["state_type"] = "hand_select"; other["hand_select"] = data.DeepClone(); break;
+            }
+            var available = GameState.Actions(other);
+            var expected = available.Items().Where(a => variant == "hand" || a["command"].Text("action") != "discard_potion").Select(a => a.Text("id"));
+            Check(policy.Prepare(other, available).Actions.Items().Select(a => a.Text("id")).SequenceEqual(expected), "preserve normal selection controls for " + variant);
+        }
+        Console.WriteLine("PASS Yummy Cookie multi-upgrade progress, no repeated toggles, duplicate cards, resume and automatic confirmation");
+    }
+
+    static async Task MultiUpgradeRun(int initiallySelected)
+    {
+        using var handler = new Scenario(MultiUpgrade(initiallySelected));
+        handler.Choose = body => body["questions"]!["action0"]!["criteria"]!.AsObject().First().Key;
+        handler.Apply = command =>
+        {
+            var data = handler.State["card_select"]!;
+            var selected = data.Num("selected_count")!.Value;
+            if (command.Text("action") == "confirm_selection")
+            {
+                Check(selected == 4 && data.Flag("preview_showing"), "confirm only after four distinct upgrades are selected");
+                return Over();
+            }
+            Check(command.Text("action") == "select_card", "multi-upgrade only selects cards then confirms");
+            var card = data["cards"]!.Items().Single(c => c.Num("index") == command.Num("index"));
+            Check(!card.Flag("selected"), "Yummy Cookie must not click an already-selected card and undo the upgrade choice");
+            card["selected"] = true; data["selected_count"] = ++selected;
+            if (selected == 4)
+            {
+                data["preview_showing"] = true; data["can_confirm"] = true; data["can_cancel"] = true;
+            }
+            return handler.State;
+        };
+        using var runtime = await Runtime(handler);
+        runtime.StartGameplay("Finish the Yummy Cookie upgrades.", "run");
+        await Wait(runtime);
+        Check(handler.Requests.Count == 4 - initiallySelected && handler.Commands.Count == 5 - initiallySelected, "one decision per remaining card; preview confirmation makes no model request");
+        Check(handler.Commands.Take(4 - initiallySelected).Select(c => c.Num("index")).SequenceEqual(Enumerable.Range(initiallySelected, 4 - initiallySelected).Select(i => (int?)i)), "upgrade progress survives fresh decisions and starting with existing selections");
+        Check(handler.Commands.Last().Text("action") == "confirm_selection", "Yummy Cookie exits its completed selection");
     }
 
     static void Options()

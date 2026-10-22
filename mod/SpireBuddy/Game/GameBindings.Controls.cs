@@ -23,9 +23,13 @@ internal static partial class GameBindings
     private static void AddShopControls(Dictionary<string, object?> state, Node? room, NMerchantInventory? inventory, NClickableControl? merchant)
     {
         bool open = inventory?.IsOpen == true;
+        // Lord's Parasol collects the inventory asynchronously before opening
+        // its free card removal. Stock/affordability alone is not interactive.
+        bool blocked = inventory != null && GetInstanceFieldValue(inventory, "_isInputBlocked") is true;
         state["inventory_open"] = open;
-        state["can_open"] = !open && inventory != null && IsControlVisibleOrActionable(merchant);
-        state["can_close"] = open && room != null && FindAll<NBackButton>(room).Any(IsControlVisibleOrActionable);
+        state["input_blocked"] = blocked;
+        state["can_open"] = !blocked && !open && inventory != null && IsControlVisibleOrActionable(merchant);
+        state["can_close"] = !blocked && open && room != null && FindAll<NBackButton>(room).Any(IsControlVisibleOrActionable);
     }
 
     private static Dictionary<string, object?> ExecuteShopControl(bool open)

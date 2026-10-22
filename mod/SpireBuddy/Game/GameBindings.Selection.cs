@@ -1,4 +1,5 @@
 using Godot;
+using MegaCrit.Sts2.Core.CardSelection;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
@@ -10,6 +11,11 @@ internal static partial class GameBindings
 {
     private static void AddSelectionState(NCardGridSelectionScreen screen, Dictionary<string, object?> state)
     {
+        if (GetInstanceFieldValue(screen, "_prefs") is CardSelectorPrefs prefs)
+        {
+            state["min_select"] = prefs.MinSelect;
+            state["max_select"] = prefs.MaxSelect;
+        }
         // Read actual selected models, including multi-select intermediate states.
         if (GetInstanceFieldValue(screen, "_selectedCards") is IEnumerable<CardModel> selectedModels)
         {

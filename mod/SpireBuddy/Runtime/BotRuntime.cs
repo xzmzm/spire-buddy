@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Net.Http;
 using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
@@ -54,6 +56,7 @@ internal sealed class BotRuntime : IDisposable
     readonly Queue<string> playNotes = new();
     int pendingChats;
     string? tracePath;
+    readonly Stopwatch traceClock = new();
     JsonNode? knowledge;
     long knowledgeAt;
     internal BotRuntime(string directory, string assembly, IGameAdapter game, HttpMessageHandler? handler = null)
@@ -211,6 +214,7 @@ internal sealed class BotRuntime : IDisposable
             gameAgent = new("game", instructions); combatAgent = null;
             tracePath = Path.Combine(directory, "runs", DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N") + ".jsonl");
             Directory.CreateDirectory(Path.GetDirectoryName(tracePath)!);
+            traceClock.Restart();
             Trace(new JsonObject { ["event"] = "play_started", ["scope"] = scope });
             languageVersion = L10n.Version; // the fresh session bakes the current prompt
             playEpoch++;
@@ -271,8 +275,20 @@ internal sealed class BotRuntime : IDisposable
     }
     void Trace(JsonNode value)
     {
-        if (tracePath == null) return;
-        try { File.AppendAllText(tracePath, value.WriteString() + "\n"); } catch (IOException) { /* Tracing must not trigger a duplicate mutation. */ }
+        lock (sync)
+        {
+            if (tracePath == null) return;
+            // Wall time aligns events with recordings; the monotonic offset
+            // preserves durations even if the system clock is adjusted.
+            // Stamp a separate record so timing never alters gameplay state.
+            var entry = new JsonObject
+            {
+                ["timestamp"] = DateTimeOffset.Now.ToString("yyyy-MM-dd'T'HH:mm:ss.fffzzz", CultureInfo.InvariantCulture),
+                ["elapsed_ms"] = traceClock.ElapsedMilliseconds
+            };
+            foreach (var field in value.AsObject()) entry[field.Key] = field.Value?.DeepClone();
+            try { File.AppendAllText(tracePath, entry.WriteString() + "\n"); } catch (IOException) { /* Tracing must not trigger a duplicate mutation. */ }
+        }
     }
 
     async Task<JsonObject> ReviewJev(JsonObject cfg, string brief, JsonArray actions, JsonNode proposal, string reason, CancellationToken ct)
@@ -349,7 +365,7 @@ internal sealed class BotRuntime : IDisposable
         """ + "\n" + CombatArithmetic + """
          Submit take_action alone after inspections, echoing snapshot= as snapshot_id. Each action_ids entry is one action, optionally followed by space-separated card choices: ["c3 c1","a5"] plays c3, selects c1 for its discard/exhaust effect, confirms locally, then executes a5. "a3 c1" also works. c1 is the first hand card; cN@enemy targets an enemy. Use advertised plays/targets; a bare cN works only with one legal target. On hand_select, cN selects that screen's card. All references use the initial snapshot, including choice cards; shifted indices resolve locally. Never use already played/chosen cards again. Inline choices bridge only the known hand selection; other screen changes, missing cards or unexpected state changes stop the batch.
         Plan the entire deterministic remainder in one call. Include advertised end_turn last when no worthwhile plays/potion uses remain, even with unused energy/playable cards. Draws, random effects and generation end the batch without end_turn. Submit potion use/discard individually. Close/confirm/proceed/end_turn must be last; inline choice confirmations are automatic. The controller may append end_turn when only end_turn and potion discards remain. Selections toggle: respect selected flags and limits. Use at most 32 steps including inline choices and confirmations.
-        Batch inspections freely. If rejected (executed=false), correct and resubmit. Keep plan, message and rationale concise. If only potion discards or no actions remain, call list_legal_actions before stopping; it refreshes once after a delay. Use its new snapshot_id/state. Never discard a potion to advance a stalled screen or invent future action IDs.
+        Batch inspections freely. If rejected (executed=false), correct and resubmit. Keep plan, message and rationale concise. If the screen seems stalled or only potion discards/no actions remain, call list_legal_actions before stopping; it refreshes live state, with a short delay for empty/discard-only actions. Use its new snapshot_id/state. Never discard a potion to advance a stalled screen or invent future action IDs.
         """;
     const string CombatArithmetic = """
         Combat arithmetic: displayed hand damage and block are live previews that may already include current modifiers, not base values or promises for every play in a batch. Do not add an already included bonus again. Simulate plays in order and recalculate later damage, block, energy and costs as effects are consumed, gained or expire. Vigor (including Akabeko's opening Vigor) applies to the next Attack played, then is consumed; it is not a separate bonus reserved for every Attack in hand. For example, with Vigor 8 and no other modifiers, attacks showing 21 and 17 deal 21 then 9 when played in that order, not 21 then 17. Respect the actual rules for multi-hit attacks and per-hit modifiers. Apply the same discipline to next-card/next-attack effects, temporary Strength or Dexterity, Weak, Vulnerable, Frail, temporary cost discounts and relic/power triggers; track their duration and consumption rather than assuming all temporary effects expire after one card. Inspect rules when unclear, and stop the batch at genuinely uncertain effects instead of assuming a favorable result. Doom is delayed lethal, not instant: it is checked only at the end of the enemy's turn, comparing its Doom stacks with its HP at that moment. The enemy still acts first, so its current attack resolves and you take that damage unless you block or mitigate it. Damage that lowers the enemy's HP before end of turn also helps Doom reach its threshold. Never treat a Doomed enemy as already dead for this turn's incoming-damage or targeting math.
@@ -365,7 +381,7 @@ internal sealed class BotRuntime : IDisposable
         + L10n.GameplayLanguageDirective;
     static JsonArray Tools() => new(
         ModelClient.Tool("inspect_game_state", "Inspect public snapshot: overview, hand, draw_pile, discard_pile, exhaust_pile, enemies, map, screen, all_public.", "section"),
-        ModelClient.Tool("list_legal_actions", "Exact legal actions and snapshot_id. If empty or discard-only, waits once for 600 ms and refreshes the snapshot; refreshed state is included."),
+        ModelClient.Tool("list_legal_actions", "Refresh live public state and return its legal actions and snapshot_id, including the refreshed state. Waits 600 ms first if the previous actions were empty or discard-only."),
         EnemyLookupTool(),
         ModelClient.Tool("search_wiki", "Search discovered cards, relics and potions by fuzzy query, or pass an empty query with item_type card, relic or potion to list them in name order. rarity filters results (all, common, uncommon, rare, starter, shop, event, ancient, basic, token, status, curse, quest). character scopes results to what one character can encounter: a character name (e.g. regent) keeps that character's pool plus shared/colorless items, colorless keeps only shared items, all (default) keeps everything. offset (default 0) and count (default 50) page the results and are honored exactly when given.", "query", "item_type", "rarity", "character", "offset", "count"),
         ModelClient.Tool("review_recent_actions", "Recent executed actions and outcomes."),
@@ -493,7 +509,8 @@ internal sealed class BotRuntime : IDisposable
                         ["rationale"] = "", ["plan"] = agent.Plan, ["source"] = lethal != null ? "jev_lethal" : reviewReason.Length > 0 ? "jev_review" : "jev"
                     };
                 }
-                string callId = ""; bool legalActionsRetried = false, contextRetried = false;
+                string callId = ""; bool contextRetried = false, refreshDecision = false;
+                int missingToolResponses = 0;
                 for (int round = 0; !automatic && !useJev && round < 24 && !stop; round++)
                 {
                     JsonObject response;
@@ -502,7 +519,7 @@ internal sealed class BotRuntime : IDisposable
                         UpdateGameplayLanguage();
                         if (agent.Session.OverBudget(cfg, Tools())) RestartGameplaySession(agent, combat, state, actions, cfg);
                     }
-                    try { response = await model.Complete(cfg, history, Tools(), agent.Session.Id, ct); }
+                    try { response = await model.Complete(cfg, history, Tools(), agent.Session.Id, ct, requireToolCall: true); }
                     catch (ContextLimitException) when (!contextRetried)
                     {
                         contextRetried = true;
@@ -511,7 +528,28 @@ internal sealed class BotRuntime : IDisposable
                     }
                     lock (sync) { agent.Session.ObserveUsage(response["usage"]); Trace(new JsonObject { ["event"] = "model_response", ["agent"] = combat ? "combat" : "game", ["session_id"] = agent.Session.Id, ["usage"] = response["usage"]?.DeepClone() }); }
                     var calls = response["calls"]!.AsArray();
-                    if (calls.Count == 0) throw new InvalidOperationException("Model returned no tool call.");
+                    if (calls.Count == 0)
+                    {
+                        // A text-only reply may describe a screen that changed
+                        // during reasoning. Refresh before asking again; never
+                        // infer an action from prose or repeat a game mutation.
+                        var live = await Stable(ct);
+                        refreshDecision = GameState.Fingerprint(live) != fingerprint || guidance != guidanceVersion;
+                        lock (sync)
+                        {
+                            Trace(new JsonObject { ["event"] = "missing_tool_call", ["session_id"] = agent.Session.Id,
+                                ["snapshot_id"] = fingerprint, ["state_changed"] = refreshDecision, ["text"] = response.Text("text") });
+                            snapshot = GameState.Public(live);
+                        }
+                        state = live;
+                        if (refreshDecision) break;
+                        if (++missingToolResponses >= 3)
+                            throw new InvalidOperationException(L10n.T("The model returned no tool call after 3 attempts.", "模型连续3次未返回工具调用。")
+                                + (string.IsNullOrWhiteSpace(response.Text("text")) ? "" : L10n.T("\nLast model reply: ", "\n模型最后回复：") + response.Text("text")));
+                        lock (sync) history.Add(ModelClient.Message("user",
+                            "Your last response contained no tool call, so no game action was executed. The live snapshot is unchanged. Continue playing by calling take_action alone with a legal action, or use the inspection tools if you need more information. Do not invent actions or discard potions to escape a stalled screen."));
+                        continue;
+                    }
                     foreach (var call in calls.OfType<JsonObject>())
                     {
                         var args = JsonNode.Parse(call.Text("arguments")) ?? new JsonObject();
@@ -529,29 +567,31 @@ internal sealed class BotRuntime : IDisposable
                         JsonNode result;
                         try
                         {
-                            bool refreshed = false;
-                            if (call.Text("name") == "list_legal_actions" && !legalActionsRetried && !GameState.HasSuitableActions(actions))
+                            bool refreshed = false, waited = false;
+                            if (call.Text("name") == "list_legal_actions")
                             {
-                                legalActionsRetried = true;
+                                waited = !GameState.HasSuitableActions(actions);
                                 state = await RetryLegalSnapshot(state, ct);
                                 actions = GameState.Actions(state);
-                                fingerprint = GameState.Fingerprint(state);
+                                refreshDecision |= GameState.Fingerprint(state) != fingerprint || guidance != guidanceVersion;
                                 lock (sync) snapshot = GameState.Public(state);
                                 refreshed = true;
                             }
                             result = await Tool(call.Text("name"), args, state, actions, ct);
                             if (call.Text("name") == "list_legal_actions")
                             {
-                                result["retried"] = legalActionsRetried;
+                                result["retried"] = waited;
+                                result["refreshed"] = refreshed;
                                 if (refreshed) result["state"] = GameState.Public(state);
                             }
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException) { result = new JsonObject { ["error"] = ex.Message }; }
                         lock (sync) ModelClient.Result(history, cfg, call.Text("id"), result);
                     }
-                    if (decision != null) break;
+                    if (decision != null || refreshDecision) break;
                 }
                 if (stop) { lock (sync) history.Clear(); break; }
+                if (refreshDecision) { state = await Stable(ct); continue; }
                 if (decision == null) throw new InvalidOperationException("Model tool budget exhausted.");
                 List<JsonNode> selected;
                 try
@@ -869,8 +909,7 @@ internal sealed class BotRuntime : IDisposable
     }
     internal async Task<JsonNode> RetryLegalSnapshot(JsonNode state, CancellationToken ct = default)
     {
-        if (GameState.HasSuitableActions(GameState.Actions(state))) return state;
-        await Task.Delay(ActionPreviewDelay, ct);
+        if (!GameState.HasSuitableActions(GameState.Actions(state))) await Task.Delay(ActionPreviewDelay, ct);
         return await game.ReadState(ct);
     }
 

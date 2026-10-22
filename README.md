@@ -10,6 +10,9 @@ Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API 
 run strategy, combat, or both, with a separate endpoint, model and API key.
 Settings are grouped into sections that start collapsed.
 
+Current release: **1.2.10**, matching the
+[Steam Workshop package](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
+
 ## Install
 
 Prerequisites are a working Slay the Spire 2 mod-loader installation and the

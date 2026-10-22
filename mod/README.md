@@ -190,6 +190,11 @@ available, including when Smith is disabled or relics change their value.
 Actual before/after card upgrade previews are included at the rest site. Reward
 questions compare a card with keeping the current deck, while upgrade questions
 compare the improvement itself, including cost and opening-hand effects.
+Deck-selection briefs include the game's actual selection limits and selected
+count; clicking a selected card is described as deselecting it. For fixed-size
+multi-upgrades such as Yummy Cookie, Jev chooses among the remaining unselected
+cards until the required set is complete, then Buddy confirms the preview
+automatically. Existing picks are retained when resuming partway through.
 
 Each Jev request contains a fresh public brief and a typed choice among current
 legal actions. It includes player instructions, HP/resources, unique card rules,
@@ -375,6 +380,8 @@ Normal and fake merchants both open automatically with Jev or the regular
 gameplay model. During fake merchant setup, Buddy waits for the initialized local
 event and its controls before opening the inventory. Purchases remain strategic;
 closing a completed shop proceeds without opening it again.
+Buddy also waits while Lord's Parasol blocks shop input to collect its free
+items, then handles the free card-removal screen when it appears.
 
 A rejected selection is returned to the gameplay session so it can re-decide;
 three consecutive validation failures stop play. Mutations are never retried,
@@ -382,12 +389,27 @@ including after a timeout. Uncertain or unchanged outcomes stop the controller.
 Model requests are bounded to 24 tool rounds per decision and 2,000 decision steps
 per start.
 
-When `list_legal_actions` has no suitable move or only potion discards, the
-controller waits 600 ms once and reads the live snapshot again before the agent
-decides whether to stop. Each started play writes JSONL to
+`list_legal_actions` always refreshes the live snapshot, including when an old
+shop snapshot still contains affordable purchases. It waits 600 ms first when
+the previous actions were empty or only potion discards. A changed screen starts
+a fresh decision. Gameplay requests require tools; text-only or empty replies
+refresh state and receive up to two corrective requests before stopping with
+the model's explanation. Normal Buddy chat still accepts text-only replies.
+Each started play writes JSONL to
 `user://spire-buddy/runs/`. Traces contain runtime events, model usage,
-stale-decision records, and per-action outcomes; they do not contain full
+stale-decision records, replies without tool calls, and per-action outcomes; they do not contain full
 before-and-after public snapshots.
+
+Every new trace record includes `timestamp`, a local ISO 8601 date and time with
+milliseconds and a UTC offset (for example, `2026-09-23T00:12:34.567+08:00`), and
+`elapsed_ms`, monotonic milliseconds since that log's `play_started` event.
+This covers commentary, model responses, actions, solver handoffs, stops, and
+errors. Each start or resume creates a new log and resets its elapsed time.
+For video alignment, subtract the recording's start time from `timestamp`;
+`elapsed_ms` starts with Buddy's log, not the recording. Commentary is timestamped
+when emitted; action outcomes are timestamped after the game settles. The panel
+may display commentary slightly later on its next refresh. Existing logs are
+unchanged and may have neither timing field.
 
 Gameplay briefs omit unchanged instructions, decks, and relic rosters within each
 model history. Changed decks and relic rosters replace the previous roster,
@@ -435,6 +457,8 @@ native-preview agreement, multiple targets and unsupported-effect fallbacks.
 Use `-- --jev-strategy` for ordered reward handling, potion replacement/skip,
 affordable shop choices, updated shop budgets and removal/exit decisions, and
 interruption between replacement steps.
+Use `-- --selections` for Yummy Cookie multi-upgrade progress, repeated-pick
+prevention, identical card copies, partial-selection resumes and confirmation.
 Use `-- --non-combat` for shared non-combat batches and adapter execution checks.
 Use `-- --merchant` for normal/fake merchant loading and automatic entry with
 Jev and the regular gameplay model, followed by purchases and leaving the shop.

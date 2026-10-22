@@ -27,6 +27,7 @@ internal sealed class JevStrategy
             skippedRewards.Clear(); openedCardReward = null; rewardLocation = location;
         }
         if (kind == "rest_site") return RestSiteOptions(state, legal);
+        if (kind == "card_select") return CardSelectionOptions(state, legal);
         if (kind == "rewards")
         {
             var remaining = state["rewards"]?["items"].Items().Where(r => !skippedRewards.Contains(RewardKey(r))).ToList() ?? [];
@@ -90,11 +91,36 @@ internal sealed class JevStrategy
             }
             return new(choices, Question: $"You have {state["player"]?["gold"]} gold available to spend at this shop. Every listed purchase is affordable now.\n" + ShopInstructions);
         }
-        if (kind is "card_reward" or "card_select" or "bundle_select" or "relic_select" or "event")
+        if (kind is "card_reward" or "bundle_select" or "relic_select" or "event")
             return new(new JsonArray(legal.Items().Where(a => a["command"].Text("action") != "discard_potion").Select(a => a.DeepClone()).ToArray()),
                 Question: JevContext.Question(state));
         if (kind == "map") return new(legal, Question: JevContext.Question(state));
         return new(legal);
+    }
+
+    static Options CardSelectionOptions(JsonNode state, JsonArray legal)
+    {
+        var choices = legal.Items().Where(a => a["command"].Text("action") != "discard_potion");
+        var data = state["card_select"];
+        var cards = data?["cards"].Items().ToList() ?? [];
+        var question = JevContext.Question(state);
+        // Yummy Cookie and other fixed-size multi-upgrades toggle picks until
+        // the entire set is selected. A stateless ranking of the same strongest
+        // card would select/deselect it forever. Fill from remaining cards;
+        // the shared preview handler confirms the completed set. Derive this
+        // from the live selection so starting or resuming partway also works.
+        if (data.Text("screen_type") == "upgrade" && !data.Flag("preview_showing")
+            && data.Num("max_select") is int count && count > 1 && data.Num("min_select") == count
+            && data.Num("selected_count") is int selected && selected >= 0 && selected < count
+            && cards.Count >= count && cards.All(c => c["selected"] != null)
+            && cards.Count(c => c.Flag("selected")) == selected)
+        {
+            choices = choices.Where(a => a["command"].Text("action") != "select_card"
+                || !cards.Any(c => c.Flag("selected") && JsonNode.DeepEquals(c["index"], a["command"]?["index"])));
+            question = $"Choose the next unselected card for this {count}-card upgrade. {selected} of {count} cards are selected; {count - selected} more required. "
+                + "Selected cards are kept and omitted from the choices because clicking them again would deselect them. All upgrades apply together after confirmation.\n" + question;
+        }
+        return new(new JsonArray(choices.Select(a => a.DeepClone()).ToArray()), Question: question);
     }
 
     // A skipped card reward can remain enabled in the loot UI. Remember the
