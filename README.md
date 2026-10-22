@@ -10,8 +10,9 @@ Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API 
 run strategy, combat, or both, with a separate endpoint, model and API key.
 Settings are grouped into sections that start collapsed.
 
-Current release: **1.2.10**, matching the
-[Steam Workshop package](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
+Source version: **1.2.10**, synced with `codex/steam-release` at `d8e9943`.
+This includes event-rule lookup, compact state, and orb-order improvements beyond
+the currently published [Steam Workshop package](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
 
 ## Install
 

@@ -11,7 +11,7 @@ namespace SpireBuddy.Runtime;
 // render values inline instead of repeating JSON keys for every item.
 internal static partial class GameState
 {
-    internal static string Brief(string fingerprint, string instructions, string plan, JsonNode state, JsonArray actions, BriefMemory? memory = null)
+    internal static string Brief(string fingerprint, string instructions, string plan, JsonNode state, JsonArray actions, BriefMemory? memory = null, JsonNode? eventRules = null)
     {
         var glossary = new SortedDictionary<string, string>();
         Harvest(state, glossary);
@@ -39,6 +39,21 @@ internal static partial class GameState
         }
         if (state["battle"] is JsonNode battle) Battle(lines, battle);
         Screen(lines, kind, state[kind]);
+        if (kind == "event")
+        {
+            if (state["map"] is JsonNode map)
+            {
+                Map(lines, map);
+                RouteNodes(lines, map, memory);
+                foreach (var option in map["next_options"].Items())
+                    L("[Path " + option["index"] + "] " + JevContext.Route(map, option).WriteString());
+            }
+            if (player?["deck"] is JsonArray deck && (memory == null || memory.Changed("event_deck_rules", deck)))
+                foreach (var rule in deck.Items().Select(c => CardText(c, false)).Distinct(StringComparer.Ordinal))
+                    L("[Card rule] " + rule + " (permanent deck)");
+            if (eventRules != null && (memory == null || memory.Changed("event_rules", eventRules)))
+                L(EventKnowledge.Brief(eventRules));
+        }
         if (player is JsonObject po) Player(lines, po, memory, kind != "hand_select");
         if (actions.Count > 0)
         {
@@ -178,6 +193,7 @@ internal static partial class GameState
         if (data == null) return;
         var segs = new List<string>();
         if (data.Text("event_name").Length > 0) segs.Add(data.Text("event_name"));
+        if (data.Text("event_id").Length > 0) segs.Add("id=" + data.Text("event_id"));
         if (data.Flag("is_ancient")) segs.Add("ancient");
         if (data.Flag("in_dialogue")) segs.Add("dialogue — advance to continue");
         if (segs.Count > 0) lines.Add("[Event] " + string.Join(" | ", segs));
@@ -190,6 +206,7 @@ internal static partial class GameState
             if (desc.Length > 0) text += " — " + desc;
             if (opt.Flag("is_locked")) text += " (locked)";
             if (opt.Flag("was_chosen")) text += " (chosen)";
+            if (opt.Text("text_key").Length > 0) text += " [key=" + opt.Text("text_key") + "]";
             var relic = opt.Text("relic_name");
             if (relic.Length > 0)
             {
@@ -329,8 +346,13 @@ internal static partial class GameState
                 (g.Count() == 1 ? "" : g.Count() + "x ") + g.Key.name + (g.Key.up && g.Key.desc.Length > 0 ? " (" + OneLine(g.Key.desc) + ")" : ""))));
         }
         if (player["orbs"] is JsonArray orbs && orbs.Count > 0)
+        {
+            // Keep the [Orbs] line stable for existing logs. The adjacent
+            // rule disambiguates list order and Dualcast's target.
+            lines.Add("[Orb order] First listed = rightmost/next to evoke; Dualcast evokes that orb twice. Remaining orbs run toward the left.");
             lines.Add("[Orbs] " + string.Join("; ", orbs.Items().Select(o => $"{o.Text("name")} ({o["passive_val"]}/{o["evoke_val"]})"))
                 + $" | {player["orb_empty_slots"]}/{player["orb_slots"]} empty");
+        }
         foreach (var pet in player["pets"].Items().OfType<JsonObject>())
         {
             var segs = new List<string> { $"{pet.Text("name")} {pet["hp"]}/{pet["max_hp"]}" };

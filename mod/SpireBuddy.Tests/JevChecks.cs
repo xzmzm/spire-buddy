@@ -51,7 +51,7 @@ internal static class JevChecks
         for (int i = 0; i < 12; i++) deck.Add(JsonNode.Parse("""{"name":"Defend","description":"Gain 5 Block.","cost":1,"keywords":[{"name":"Block","description":"Prevents damage."}]}"""));
         var recent = new JsonArray(new JsonObject { ["summary"] = "take Potion" });
         var brief = GameState.JevBrief(state, "Preserve HP. Avoid elites.", "Seek a rest site.", recent, "Do not repeat a0.");
-        foreach (var text in new[] { "12x Defend", "Gain 5 Block.", "Gain 12 Block.", "HP 30/70", "Gold 150", "Stars 4", "intent: Attack 8x2", "Reduce attack damage by 1.", "Deal 3 passive damage.", "Osty", "Attacks deal 2 more damage.", "Deal 9 damage.", "free slots: 0, 2", "Happy Flower (2)", "[Route] 2,4 Shop", "Visible Boss", "Avoid elites.", "Do not repeat a0.", "[Recent] take Potion" })
+        foreach (var text in new[] { "12x Defend", "Gain 5 Block.", "Gain 12 Block.", "HP 30/70", "Gold 150", "Stars 4", "intent: Attack 8x2", "Reduce attack damage by 1.", "Deal 3 passive damage.", "Osty", "Attacks deal 2 more damage.", "Deal 9 damage.", "free slots: 0, 2", "Happy Flower (2)", "2,4 Shop -> -", "Visible Boss", "Avoid elites.", "Do not repeat a0.", "[Recent] take Potion" })
             Check(brief.Contains(text), "Jev brief includes " + text);
         Check(brief.Split("Gain 5 Block.").Length == 2 && brief.Split("Prevents damage.").Length == 2, "duplicate deck and keyword rules are sent once");
         Check(brief.Contains("1 energy + 2 stars") && brief.Contains("[Upgrade 0] energy=0"), "both current resources and upgraded costs remain explicit");

@@ -6,7 +6,7 @@ Godot panel dispatches in-process calls; it does not use an HTTP control server.
 commands, and dispatches clicks or game commands on the main thread.
 `GameState` filters observations and enumerates commands, `ActionBatch`
 validates/re-resolves batches, `ModelClient` handles the two API formats, and
-`EnemyDecompiler` reads static assembly source through ILSpy's DLL.
+`EnemyDecompiler` and `EventKnowledge` read static assembly source through ILSpy's DLL.
 `BotRuntime` owns lifecycle, settings, session history, operator chat and traces.
 `JevClient` provides an optional TypeSafe choice API for strategic and combat
 decisions; `GameState.Jev` builds its self-contained public brief.
@@ -94,7 +94,7 @@ until the merchant can open. Purchases use the same initialized-event lookup.
 
 The model initially receives a compact decision brief, then chooses which details
 to retrieve with read-only function tools. It can inspect state sections,
-list legal actions, query public enemy patterns, search discovered cards/relics/potions, and
+list legal actions, query public enemy patterns and event branches, search discovered cards/relics/potions, and
 review recent transitions. It finishes by calling the typed `take_action` terminal
 tool. That call submits a decision to the controller; it does not mutate the game
 itself. The controller resolves, freshness-checks, and executes the selected action
@@ -112,6 +112,26 @@ and effective default so the model can distinguish cooldown from repeat limits.
 This source lookup is static: it does not load game objects or read the current
 intent, seed, RNG state, or a future rolled move. If no compatible decompiler is
 available, the tool reports the lookup error and the model reasons under uncertainty.
+
+`lookup_event` resolves a stable event ID (or English name) and follows syntax
+references to reward models, pools, powers and event helpers in the installed
+assembly. It returns source for the whole event, including later branches, plus
+referenced effects. Multiple matching names return candidates instead of choosing
+an arbitrary event. The 15-second lookup is bounded to 12 sources, 24,000 characters
+per source and 72,000 in total; omitted/failed/truncated sources make coverage
+explicitly partial. Successful bundles use a versioned, assembly-hash cache.
+General engine APIs, localization and dynamically selected types are not evaluated;
+the result is static rule evidence, not a guarantee of exhaustive effects or live rolls.
+
+Before a strategic event decision, `BotRuntime` loads the bundle for both providers
+outside the main-thread adapter and snapshot fingerprint. Regular histories retain
+it once per unchanged bundle and reinsert it on rollover; stateless Jev receives it
+on every evaluation. Briefs include the current event ID and visible option text
+keys, full deck rules and reachable public map topology. Shared instructions compare
+remaining costs and alternative exits from the current stage, without treating sunk
+HP/gold as a reason to continue. Chat also exposes the explicit lookup tool. No event
+is instantiated and no live reward, event counter or RNG field is read by the lookup.
+Execution still checks the original live fingerprint after any lookup/model delay.
 
 Before packet construction, a recursive information firewall removes keys associated
 with seeds, RNG state, draw/shuffle order, future rewards, future encounters, and
@@ -328,7 +348,31 @@ messages in the composer and Buddy decides whether to answer, steer active play,
 or start play.
 
 Buddy reads fresh public state before each user turn. The first turn includes the
-state and play status. Identical observations add nothing. Small changes use
+state and play status. `CompactState` renders repeated object arrays as tables:
+field names occur once, and consecutive identical items share a `*N` repeat row.
+Map coordinates and children remain exact; deck variants, card/choice indices,
+false values, nulls, empty collections and absent fields remain distinct. The
+inline legend defines the format on every full anchor, including a rollover.
+For example:
+
+```text
+nodes[2]{col,row,type,children}:
+  [4,2,"Unknown",[[4,3],[5,3]]]
+  [4,3,"Monster",[[5,4]]]
+```
+
+Each row follows the column header. `~` and omitted trailing cells mean absent
+properties; `null` remains an explicit JSON null. `*5 [values]` represents five
+consecutive identical objects in their original array positions. Strings and
+nested cell values retain JSON escaping. The renderer falls back to ordinary
+JSON when it uses fewer UTF-8 bytes, including the legend. Canonical snapshots,
+fingerprints, tool responses and the diff baseline retain their original JSON.
+Indented `-` list items allow nested patch values to use tables as well, so a
+changed deck does not revert to repeated card JSON inside a `set` operation.
+Gameplay route briefs use one adjacency-list header and retain unchanged topology
+within that agent's history; fresh histories and stateless Jev always receive it.
+
+Identical observations add nothing. Small changes use
 JSON Pointer `set`/`remove` operations, including deletions; if a replacement is
 smaller, it sends the full state. Unchanged deck or relic data is not repeatedly
 prefixed to follow-up questions. State is filtered through the same information

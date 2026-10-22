@@ -90,6 +90,17 @@ internal static class BriefChecks
         Check(Render(memory).Contains("Channel: Make a different orb."), "changed keyword definition resent");
         state["player"]!["deck"]!.AsArray().Clear();
         Check(Render(memory).Contains("[Deck 0]"), "empty deck explicitly replaces old deck");
+        var orbState = JsonNode.Parse("""
+            {"state_type":"monster","player":{"orb_order":"rightmost_to_leftmost","orb_slots":3,"orb_empty_slots":0,
+              "orbs":[{"name":"Frost","passive_val":2,"evoke_val":5},
+                      {"name":"Lightning","passive_val":3,"evoke_val":8},
+                      {"name":"Dark","passive_val":6,"evoke_val":30}]}}
+            """)!;
+        var orbBrief = GameState.Brief("orb-snapshot", "win", "", GameState.Public(orbState)!, new JsonArray());
+        Check(GameState.Public(orbState)!["player"].Text("orb_order") == "rightmost_to_leftmost", "orb order survives public state projection");
+        Check(orbBrief.Contains("First listed = rightmost/next to evoke; Dualcast evokes that orb twice"), "orb order and Dualcast target explicit");
+        Check(orbBrief.Contains("[Orbs] Frost (2/5); Lightning (3/8); Dark (6/30) | 0/3 empty"), "orb list retains game queue order and replay anchor format");
+        Check(orbBrief.IndexOf("[Orb order]", StringComparison.Ordinal) < orbBrief.IndexOf("[Orbs]", StringComparison.Ordinal), "orb direction precedes ordered list");
         Console.WriteLine($"PASS history-scoped brief compression ({first.Length} -> {second.Length} characters unchanged)");
     }
 }

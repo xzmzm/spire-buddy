@@ -147,7 +147,7 @@ internal static partial class GameBindings
             state["discard_pile"] = BuildPileCardList(combatState.DiscardPile.Cards, PileType.Discard);
             state["exhaust_pile"] = BuildPileCardList(combatState.ExhaustPile.Cards, PileType.Exhaust);
 
-            // Orbs
+            // The game draws OrbQueue.Orbs[0] in the rightmost slot and evokes it first.
             var orbQueue = combatState.OrbQueue;
             if (orbQueue != null && orbQueue.Capacity > 0)
             {
@@ -175,6 +175,7 @@ internal static partial class GameBindings
                     });
                 }
                 state["orbs"] = orbs;
+                state["orb_order"] = "rightmost_to_leftmost";
                 state["orb_slots"] = orbQueue.Capacity;
                 state["orb_empty_slots"] = orbQueue.Capacity - orbQueue.Orbs.Count;
             }

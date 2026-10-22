@@ -258,7 +258,7 @@ is missing, and wake up once its assembly has loaded:
   is playing.
 
 Talk to Buddy in the single chat composer. Questions do not start play by
-themselves. The initial chat window includes these examples:
+themselves. Example requests:
 
 | Example | Behavior |
 | --- | --- |
@@ -268,6 +268,7 @@ themselves. The initial chat window includes these examples:
 | `What should I do next?` | Ask for advice without starting play. |
 | `What are my potion reward chances?` | Explain the current public potion odds. |
 | `What moves can this enemy use?` | Look up static rules from the installed game assembly. |
+| `What happens if I keep going in this event?` | Look up event branches, later costs, and referenced reward effects from the installed game. |
 | `What should I pick from these rewards?` | Compare visible reward choices. |
 | `Which card, relic, path, or shop option is best?` | Compare visible choices. |
 
@@ -326,6 +327,30 @@ cannot reuse stale source. A lookup error is reported as missing knowledge.
 If the returned source calls `RandomBranchState.AddBranch`, the lookup adds
 compact notes covering its overloads, parameter meanings, and defaults.
 
+Event decisions also load static source automatically, for both the normal model
+and Jev. `lookup_event` is available in gameplay and chat for explicit inspection;
+it accepts the stable event ID, an English name, or an empty string for the current
+event. The bundle includes the event class and recursively referenced reward
+models, powers, pools, and event helpers, even for rewards the profile has not yet
+discovered. It reads source only, without constructing an event or rolling rewards.
+Successful bundles are cached against the game assembly SHA-256.
+
+Event briefs include stable option keys to identify the current stage, full deck
+rules, held relic/potion descriptions, HP/gold, and the visible route and boss.
+The agent compares remaining costs and exit rewards from that stage; already-paid
+costs are sunk. For example, Colossal Flower's source supplies all three damage
+amounts and gold exits, and Pollinous Core's source supplies its draw effect.
+Source persists across stages and is supplied again after a context rollover;
+Jev receives it with every event evaluation because it has no tool/history loop.
+
+Lookups have a 15-second deadline and include at most 12 sources, 24,000 characters
+per source and 72,000 characters overall. Ambiguous names request an exact ID.
+Missing, failed or truncated dependencies are reported explicitly. Source coverage
+does not guarantee complete knowledge of dynamically selected rewards, general
+engine helpers, localization text or live modifiers. The model must use current
+visible costs/locks, distinguish possible random outcomes from actual rolls, and
+acknowledge uncertainty rather than inventing missing effects.
+
 Before model packets are built, a recursive information firewall removes seeds,
 random-number state, draw or shuffle order, future rewards or encounters, and
 already-rolled future enemy moves. Current intents, pile membership without order,
@@ -333,6 +358,13 @@ the visible map and boss, and static rules remain available. Each decision reach
 the model as a compact line-based brief with aggregated piles, a history-scoped
 keyword glossary, a 16-hex snapshot id, and the current legal actions. The
 uncompressed public JSON remains available through inspection tools.
+Buddy's chat state also uses compact tables: map nodes share one field header,
+and consecutive identical cards share a repeat count. Values and array positions
+are preserved, including distinct upgrades, costs, choice indices and empty/null
+fields. A short format legend accompanies full states; small payloads keep JSON
+when it is shorter. Follow-up chats still receive only changed state. Event briefs
+retain unchanged route topology in their own history and restore it after rollover;
+stateless Jev receives the route on every decision.
 
 The controller selects only from locally enumerated legal actions and checks the
 selection against a fresh, settled snapshot. A batch can contain up to 32 steps
@@ -450,6 +482,8 @@ dotnet run --project mod/SpireBuddy.Tests -c Release
 For just the compact card-sequence checks, append `-- --card-choices` to the run
 command. Use `-- --dialogue` for ancient and Architect dialogue continuation and
 settlement, or `-- --solver` for Combat Solver hand-offs, card choices, and fallbacks.
+Use `-- --compact-state` for lossless map/card tables, sparse fields, repeats,
+unchanged-state suppression, JSON Pointer diffs, re-anchors and route history.
 Use `-- --jev` for Jev request/response validation, compact state, independent
 credentials, decision routing, solver priority, and stop/steering checks.
 Use `-- --jev-combat` for the missed-lethal regression positions, sequencing,
@@ -464,6 +498,10 @@ Use `-- --merchant` for normal/fake merchant loading and automatic entry with
 Jev and the regular gameplay model, followed by purchases and leaving the shop.
 Use `-- --crystal` for Crystal Sphere fragment/completion regressions, tool geometry,
 curse overlap, hidden-information isolation, action mapping and final-click settlement.
+Use `-- --events` for event/reward source lookup, coverage limits, versioned caches,
+stage/deck/route context, both model transports, Jev and context rollovers. With
+`STS2_GAME_ASSEMBLY` set, this also verifies Colossal Flower and Doll Room against
+the installed game and checks that both decision providers receive those rules.
 
 The tests target `net9.0` and need the .NET 9 runtime. They need neither
 Godot nor Python. The suite exercises both model transports with fake HTTP

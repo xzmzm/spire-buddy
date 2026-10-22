@@ -45,13 +45,13 @@ internal sealed class AgentSession(string role)
     {
         var unchanged = JsonNode.DeepEquals(previousState, state);
         if (unchanged && !force) return;
-        var full = "Current public game state:\n" + state.WriteString();
+        var full = "Current public game state:\n" + CompactState.Write(state);
         var message = full;
         if (previousState != null && !unchanged)
         {
             var changes = new JsonArray();
             Diff(previousState, state, "", changes);
-            var delta = "Public state changes (JSON Pointer paths; set replaces the value, remove deletes it; other values are unchanged):\n" + changes.WriteString();
+            var delta = "Public state changes (JSON Pointer paths; set replaces the value, remove deletes it; other values are unchanged):\n" + CompactState.Write(changes);
             if (Bytes(delta) < Bytes(full)) message = delta;
         }
         History.Add(ModelClient.Message("user", message));

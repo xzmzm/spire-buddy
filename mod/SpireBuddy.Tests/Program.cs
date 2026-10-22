@@ -15,11 +15,14 @@ if (args.Contains("--non-combat")) { await NonCombatBatchChecks.Run(); await Ada
 if (args.Contains("--merchant")) { await MerchantChecks.Run(); return; }
 if (args.Contains("--tool-recovery")) { await ToolRecoveryChecks.Run(); return; }
 if (args.Contains("--crystal")) { await CrystalSphereChecks.Run(); return; }
+if (args.Contains("--events")) { await EventKnowledgeChecks.Run(); return; }
+if (args.Contains("--compact-state")) { CompactStateChecks.Run(); return; }
 await CardChoiceChecks.Run();
 if (args.Contains("--card-choices")) return;
 await RestSiteChecks.Run();
 await AdapterChecks.Run();
 BriefChecks.Run();
+CompactStateChecks.Run();
 await BriefChecks.Histories();
 await SessionChecks.Run();
 await ToolRecoveryChecks.Run();
@@ -31,6 +34,7 @@ await JevStrategyChecks.Run();
 await MerchantChecks.Run();
 await NonCombatBatchChecks.Run();
 await CrystalSphereChecks.Run();
+await EventKnowledgeChecks.Run();
 var state = JsonNode.Parse("""{"state_type":"monster","seed":5,"run":{"act":1,"floor":5,"ascension":10},"player":{"character":"The Defect","hp":43,"max_hp":75,"gold":125,"energy":1,"max_energy":3,"hand":[{"index":0,"name":"Strike","can_play":true,"target_type":"AnyEnemy"},{"index":1,"can_play":false}],"draw_pile":[{"name":"B"},{"name":"A"}],"potions":[{"slot":2,"target_type":"AnyEnemy"}]},"battle":{"round":1,"turn":"player","enemies":[{"entity_id":"a","enemy_id":"FROG","name":"Frog","hp":4,"max_hp":9,"rolled_move":"secret","intents":[{"type":"Attack","label":"8","title":"Aggressive"}]},{"entity_id":"dead","hp":0}]}}""")!;
 var pub = GameState.Public(state)!;
 Check(pub["seed"] == null && pub["battle"]!["enemies"]![0]!["rolled_move"] == null, "hidden info");
