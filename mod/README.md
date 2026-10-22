@@ -437,11 +437,9 @@ milliseconds and a UTC offset (for example, `2026-09-23T00:12:34.567+08:00`), an
 `elapsed_ms`, monotonic milliseconds since that log's `play_started` event.
 This covers commentary, model responses, actions, solver handoffs, stops, and
 errors. Each start or resume creates a new log and resets its elapsed time.
-For video alignment, subtract the recording's start time from `timestamp`;
-`elapsed_ms` starts with Buddy's log, not the recording. Commentary is timestamped
-when emitted; action outcomes are timestamped after the game settles. The panel
-may display commentary slightly later on its next refresh. Existing logs are
-unchanged and may have neither timing field.
+Commentary is timestamped when emitted; action outcomes are timestamped after
+the game settles. These fields support event ordering and latency diagnostics.
+Older logs may have neither timing field.
 
 Gameplay briefs omit unchanged instructions, decks, and relic rosters within each
 model history. Changed decks and relic rosters replace the previous roster,

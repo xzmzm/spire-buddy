@@ -280,7 +280,7 @@ internal sealed class BotRuntime : IDisposable
         lock (sync)
         {
             if (tracePath == null) return;
-            // Wall time aligns events with recordings; the monotonic offset
+            // Wall time orders diagnostic events; the monotonic offset
             // preserves durations even if the system clock is adjusted.
             // Stamp a separate record so timing never alters gameplay state.
             var entry = new JsonObject
