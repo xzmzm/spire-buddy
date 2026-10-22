@@ -10,9 +10,8 @@ Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API 
 run strategy, combat, or both, with a separate endpoint, model and API key.
 Settings are grouped into sections that start collapsed.
 
-Version: **1.2.11**. Based on `codex/steam-release` at `d8e9943`, with automatic
-tool choice and bounded corrective prompting for gameplay. The mod is available
-on [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
+Version: **1.2.11**. Available on
+[Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
 
 ## Install
 

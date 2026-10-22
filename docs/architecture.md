@@ -6,9 +6,6 @@ adapter schedules live reads and commands on Godot's main thread; model requests
 run asynchronously. Installation and configuration are covered in
 [the mod guide](../mod/README.md).
 
-This document describes the 1.2.11 public release, based on `codex/steam-release`
-at `d8e9943`, with automatic tool choice and bounded prompt-based recovery.
-
 ```text
 Game objects and controls (Godot main thread)
                  |
