@@ -28,7 +28,7 @@ internal sealed class ModelClient
         return JsonNode.Parse(text) ?? throw new InvalidOperationException("API returned empty JSON.");
     }
     internal static JsonObject Message(string role, string text) => new() { ["role"] = role, ["content"] = text };
-    internal async Task<JsonObject> Complete(JsonObject settings, JsonArray history, JsonArray tools, string cacheKey, CancellationToken ct, bool requireToolCall = false)
+    internal async Task<JsonObject> Complete(JsonObject settings, JsonArray history, JsonArray tools, string cacheKey, CancellationToken ct)
     {
         bool responses = settings.Text("api_type") == "responses";
         var payload = (JsonArray)history.DeepClone()!;
@@ -44,7 +44,6 @@ internal sealed class ModelClient
             // Read-only inspections may be batched in one turn; the runtime executes
             // them serially and rejects a premature take_action bundled with them.
             body["parallel_tool_calls"] = true;
-            if (requireToolCall) body["tool_choice"] = "required";
         }
         var effort = settings.Text("reasoning_effort");
         if (effort.Length > 0 && effort != "default") body[responses ? "reasoning" : "reasoning_effort"] = responses ? new JsonObject { ["effort"] = effort } : JsonValue.Create(effort);

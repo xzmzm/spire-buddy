@@ -424,9 +424,11 @@ per start.
 `list_legal_actions` always refreshes the live snapshot, including when an old
 shop snapshot still contains affordable purchases. It waits 600 ms first when
 the previous actions were empty or only potion discards. A changed screen starts
-a fresh decision. Gameplay requests require tools; text-only or empty replies
-refresh state and receive up to two corrective requests before stopping with
-the model's explanation. Normal Buddy chat still accepts text-only replies.
+a fresh decision. Model requests omit `tool_choice` and leave tool selection
+automatic. Gameplay instructions request tool calls; text-only or empty replies
+refresh state and receive up to two corrective requests on an unchanged snapshot
+before stopping with the model's explanation. Normal Buddy chat still accepts
+text-only replies.
 Each started play writes JSONL to
 `user://spire-buddy/runs/`. Traces contain runtime events, model usage,
 stale-decision records, replies without tool calls, and per-action outcomes; they do not contain full
@@ -480,6 +482,8 @@ dotnet run --project mod/SpireBuddy.Tests -c Release
 For just the compact card-sequence checks, append `-- --card-choices` to the run
 command. Use `-- --dialogue` for ancient and Architect dialogue continuation and
 settlement, or `-- --solver` for Combat Solver hand-offs, card choices, and fallbacks.
+Use `-- --tool-recovery` for automatic tool choice, text-only and empty replies,
+bounded corrective requests, live-state refreshes and cancellation during recovery.
 Use `-- --compact-state` for lossless map/card tables, sparse fields, repeats,
 unchanged-state suppression, JSON Pointer diffs, re-anchors and route history.
 Use `-- --jev` for Jev request/response validation, compact state, independent

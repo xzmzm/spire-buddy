@@ -94,10 +94,10 @@ items, recent transitions, enemy rules and event rules. It submits a decision wi
 Submitting the tool does not itself mutate the game: the controller validates and
 executes the selected commands afterward.
 
-`ModelClient` supports Responses and Chat Completions. Gameplay calls pass
-`requireToolCall: true`, which sends `tool_choice: "required"`. Ordinary chat and
-connection tests leave tool choice unforced. Strict tool schemas constrain the
-arguments, while controller-side checks still validate the selected action.
+`ModelClient` supports Responses and Chat Completions. Both transports omit
+`tool_choice`, leaving tool selection automatic for gameplay, chat and connection
+tests. Gameplay instructions request tool calls, and strict tool schemas constrain
+their arguments. Controller-side checks still validate the selected action.
 
 If a successful response contains only text or no tool call, the controller reads
 the live state again. Changed state gets a fresh decision brief. An unchanged
@@ -105,10 +105,9 @@ snapshot permits two corrective requests, for three attempts in total, before
 stopping with the last explanation. Prose is never converted into an action.
 `missing_tool_call` traces record the explanation and whether the state changed.
 
-This source has no automatic fallback for providers that reject forced tool choice.
-Such an HTTP error occurs before the missing-tool-call recovery path, so a working
-chat or connection test does not establish gameplay compatibility. The configured
-gameplay endpoint must accept the required tool-choice request.
+Prompt-based recovery also supports providers that reject forced tool choice.
+It does not guarantee a tool call: repeated text-only replies stop within the
+existing limit. Ordinary chat and connection tests accept text-only replies.
 
 Tool rounds are bounded to 24 per decision, and a started play is bounded to 2,000
 decision-loop steps. Context and response validation failures also have bounded

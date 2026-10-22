@@ -541,7 +541,7 @@ internal sealed class BotRuntime : IDisposable
                         UpdateGameplayLanguage();
                         if (agent.Session.OverBudget(cfg, Tools())) RestartGameplaySession(agent, combat, state, actions, cfg, eventRules);
                     }
-                    try { response = await model.Complete(cfg, history, Tools(), agent.Session.Id, ct, requireToolCall: true); }
+                    try { response = await model.Complete(cfg, history, Tools(), agent.Session.Id, ct); }
                     catch (ContextLimitException) when (!contextRetried)
                     {
                         contextRetried = true;

@@ -95,7 +95,7 @@ internal static class ToolRecoveryChecks
         handler.Respond = (body, _) =>
         {
             Check(state.Text("state_type") == "card_select" && reads >= 6, "only ask the model after the removal appears");
-            Check(body.Text("tool_choice") == "required", "gameplay requires tool calls");
+            Check(!body.AsObject().ContainsKey("tool_choice"), "gameplay leaves tool choice automatic");
             return Task.FromResult(handler.Action(body));
         };
         var game = new ScheduledGameAdapter(a => a(), () =>
@@ -132,7 +132,7 @@ internal static class ToolRecoveryChecks
         int calls = 0;
         handler.Respond = (body, _) =>
         {
-            Check(body.Text("tool_choice") == "required", "require tools on initial and recovery requests");
+            Check(!body.AsObject().ContainsKey("tool_choice"), "initial and recovery requests leave tool choice automatic");
             if (++calls == 1) return Task.FromResult(handler.Answer(empty ? "" : "I will remove a Strike."));
             var history = handler.History(body);
             Check(history.Any(n => n.Text("content").Contains("no game action was executed")), "retry explains the missing tool call");
@@ -151,12 +151,16 @@ internal static class ToolRecoveryChecks
     static async Task RepeatedMissingCalls(string api)
     {
         using var handler = new SessionHandler(api) { State = Removal() };
-        handler.Respond = (_, _) => Task.FromResult(handler.Answer("No controls are visible."));
+        handler.Respond = (body, _) =>
+        {
+            Check(!body.AsObject().ContainsKey("tool_choice"), "all three attempts leave tool choice automatic");
+            return Task.FromResult(handler.Answer("No controls are visible."));
+        };
         using var runtime = await Runtime(handler);
         runtime.StartGameplay("Continue.", "run");
         var status = await Wait(runtime);
         Check(status.Text("status") == "error" && handler.Requests.Count == 3 && handler.Commands == 0,
-            "providers that ignore required tools stop after three replies without a mutation");
+            "repeated replies without tool calls stop after three attempts without a mutation");
         Check(status["messages"].Items().Any(n => n.Text("message").Contains("No controls are visible.")),
             "final error retains the model's explanation");
     }
