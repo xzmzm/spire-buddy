@@ -10,7 +10,7 @@ Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API 
 run strategy, combat, or both, with a separate endpoint, model and API key.
 Settings are grouped into sections that start collapsed.
 
-Version: **1.2.11**. Available on
+Version: **1.2.12**, for Slay the Spire 2 v0.113.0 with the Fool. Available on
 [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
 
 ## Install
