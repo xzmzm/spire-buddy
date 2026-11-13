@@ -1,0 +1,48 @@
+[h1]Spire Buddy[/h1]
+An in-game AI strategy companion for [b]Slay the Spire 2[/b]. Chat about your current run, ask for information like enemy moves, event outcomes, potion chances and recommendations, or just let Buddy play for you.
+
+[hr][/hr]
+
+[h2]What's New (1.2.12)[/h2]
+[list]
+[*]Supports Slay the Spire 2 [b]v0.113.0[/b] and the Fool.
+[*]The model selection list is now scrollable, so long model lists stay inside the window.
+[*]Works with models that reject forced tool choice, including Claude Opus 5.5.
+[*]Event branch and reward-rule lookup from the installed game, used by Buddy and Jev.
+[*]Compact game-state context to reduce repeated tokens.
+[*][b]Jev support:[/b] turn on Jev in settings to let it make decisions.
+[*][b]Combat solver mod support:[/b] turn on the combat solver in settings to use it.
+[/list]
+
+[quote][b]Note:[/b] Built and tested against Slay the Spire 2 v0.113.0. Other versions may not work.[/quote]
+
+[h2]Features[/h2]
+[list]
+[*]In-game chat and settings panel
+[*]Advice for combat, rewards, shops, events, paths, cards, relics, and potions
+[*]Lookup of enemy moves and event branches from the installed game
+[*]Optional automated play with fresh-state validation
+[*]English and Chinese interface support
+[*]Configurable OpenAI-compatible API endpoint and model
+[/list]
+
+[h2]API Key & AI Model Setup[/h2]
+Before using Spire Buddy, open the in-game settings panel and set up your AI connection:
+[list]
+[*][b]API endpoint:[/b] The OpenAI-compatible API address from your provider or local proxy.
+[*][b]API key:[/b] Your provider's API key, or the client API key set in your local proxy. [i]Do not enter your account password.[/i]
+[*][b]AI model:[/b] The exact model ID your chosen endpoint supports. Use the ▾ button to load the list of models from your endpoint.
+[/list]
+
+If you already have a [b]Codex or ChatGPT subscription[/b], we recommend using [url=https://github.com/router-for-me/CLIProxyAPI]CLIProxyAPI[/url] as a local proxy bridge to your subscription. See the CLIProxyAPI documentation for how to set it up.
+
+[h2]Privacy[/h2]
+Model requests go directly to the API endpoint you set. Your API key and settings are stored locally in the game's user-data folder.
+
+This mod does not include or redistribute the game's assemblies.
+
+[hr][/hr]
+
+[h2]Source & Contributions[/h2]
+GitHub: [url=https://github.com/xzmzm/spire-buddy]github.com/xzmzm/spire-buddy[/url]
+Suggestions and pull requests are welcome!
