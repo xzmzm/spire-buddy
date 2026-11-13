@@ -13,7 +13,7 @@ using MegaCrit.Sts2.Core.Saves;
 namespace SpireBuddy;
 
 [ModInitializer(nameof(Initialize))]
-public static class Mod
+public static partial class Mod
 {
     private static BotRuntime Runtime = null!;
     private static readonly ConcurrentQueue<Action> Main = new();
@@ -36,7 +36,7 @@ public static class Mod
     private static OptionButton Api = null!, Personality = null!, Effort = null!;
     private static VBoxContainer CustomPersonalityFields = null!;
     private static TextEdit CustomPersonality = null!;
-    private static MenuButton ModelPicker = null!;
+    private static ModelMenu ModelPicker = null!;
     private static Button Test = null!, TestJev = null!;
     private static bool Probing, ProbingJev;
     private static Button Save = null!, SendButton = null!, ResizeHandle = null!;
@@ -325,9 +325,8 @@ public static class Mod
         Label(chatModel, L10n.T("AI model · select or enter a custom ID", "AI 模型 · 从列表选择或输入自定义 ID"));
         var modelRow = new HBoxContainer(); chatModel.AddChild(modelRow);
         Model = new LineEdit { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill, PlaceholderText = L10n.T("Model ID", "模型 ID") }; modelRow.AddChild(Model);
-        ModelPicker = new MenuButton { Text = "▾", TooltipText = L10n.T("Load models using the endpoint and API key above", "使用上面的端点和 API 密钥加载模型列表") }; modelRow.AddChild(ModelPicker);
-        ModelPicker.AboutToPopup += LoadModels;
-        ModelPicker.GetPopup().IdPressed += id => Model.Text = ModelPicker.GetPopup().GetItemText((int)id);
+        ModelPicker = new ModelMenu(modelRow, Model, LoadModels,
+            L10n.T("Load models using the endpoint and API key above", "使用上面的端点和 API 密钥加载模型列表"));
         Effort = Options(chatModel, L10n.T("Reasoning effort", "推理力度"), ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max"]);
         Test = Button(chatModel, L10n.T("Test Buddy connection", "测试 Buddy 连接"), TestSettings);
 
@@ -687,21 +686,16 @@ public static class Mod
     }
     private static void LoadModels()
     {
-        var popup = ModelPicker.GetPopup(); popup.Clear(); popup.AddItem(L10n.T("Loading models…", "正在加载模型…")); popup.SetItemDisabled(0, true);
+        ModelPicker.Loading(L10n.T("Loading models…", "正在加载模型…"));
         var endpoint = Endpoint.Text; var key = Key.Text;
         var payload = new JsonObject { ["api_endpoint"] = endpoint };
         // The untouched mask means "keep the stored key", like a blank field.
         if (key.Length > 0 && key != MaskedKey) payload["api_key"] = key;
         _ = Request("POST", "/models", payload, value =>
         {
-            popup.Clear();
-            if (Endpoint.Text != endpoint || Key.Text != key) { popup.Hide(); return; }
-            foreach (var model in value?["models"]?.AsArray() ?? new JsonArray()) popup.AddItem(model!.ToString());
-            if (popup.ItemCount == 0)
-            {
-                popup.AddItem(value == null ? L10n.T("Could not load · enter a custom ID", "加载失败 · 请输入自定义 ID") : L10n.T("No models listed · enter a custom ID", "没有模型 · 请输入自定义 ID"));
-                popup.SetItemDisabled(0, true);
-            }
+            if (Endpoint.Text != endpoint || Key.Text != key) { ModelPicker.Hide(); return; }
+            ModelPicker.Models(value?["models"].Items().Select(model => model.ToString()) ?? [],
+                value == null ? L10n.T("Could not load · enter a custom ID", "加载失败 · 请输入自定义 ID") : L10n.T("No models listed · enter a custom ID", "没有模型 · 请输入自定义 ID"));
         });
     }
     private static void Send(string path, JsonNode? payload = null, Action? success = null, string method = "POST", string? saved = null)
