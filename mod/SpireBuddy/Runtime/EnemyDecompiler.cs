@@ -41,6 +41,10 @@ internal sealed class EnemyDecompiler(string assembly, string directory)
                 "An int argument without a MoveRepeatType argument is maxRepeats, not cooldown, and selects CanRepeatXTimes.")
         }
     };
+    static readonly JsonArray AscensionNote = new(
+        "GetValueIfAscension(level, a, b) returns a when that ascension effect is active in this run, otherwise b.",
+        "Standard mode: effects are AscensionLevel values 1..run.ascension (WearyTraveler=2, ToughEnemies=8, DeadlyEnemies=9). Blitz mode maps its levels to other effects; use run.ascension_effects.",
+        "IsDread() is true only when run.game_mode is Dread; it is false in Standard runs.");
     static string Normalize(string name) => Regex.Replace(name.ToLowerInvariant(), "[^a-z0-9]", "");
     static string[] QueryVariants(string name)
     {
@@ -111,6 +115,12 @@ internal sealed class EnemyDecompiler(string assembly, string directory)
         if (result["matches"].Items().Any(match =>
             Regex.IsMatch(match.Text("decompiled_source"), @"\.AddBranch\s*\(")))
             result["decompilation_notes"] = AddBranchNote.DeepClone();
+        if (result["matches"].Items().Any(match => match.Text("decompiled_source").Contains("AscensionHelper.", StringComparison.Ordinal)))
+        {
+            var notes = result["decompilation_notes"] as JsonObject ?? new JsonObject();
+            notes["AscensionHelper"] = AscensionNote.DeepClone();
+            result["decompilation_notes"] = notes;
+        }
         return result;
     }
 }

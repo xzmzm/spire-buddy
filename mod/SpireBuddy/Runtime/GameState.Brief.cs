@@ -30,7 +30,10 @@ internal static partial class GameState
             if (run != null)
             {
                 var where = $"Act {run["act"]} Floor {run["floor"]}";
+                if (run.Text("game_mode").Length > 0) where += " " + run.Text("game_mode") + " mode";
                 if ((run["ascension"]?.GetValue<int>() ?? 0) > 0) where += $" Asc {run["ascension"]}";
+                if (run["ascension_effects"] is JsonArray effects && effects.Count > 0)
+                    where += " (" + string.Join(", ", effects.Items().Select(e => e!.ToString())) + ")";
                 parts.Add(where);
             }
             if (player?["hp"] != null) parts.Add($"HP {player["hp"]}/{player["max_hp"]}");
@@ -324,6 +327,11 @@ internal static partial class GameState
             var segs = new List<string> { $"Energy {player["energy"]}/{player["max_energy"]}" };
             if (player["block"] != null) segs.Add("Block " + player["block"]);
             if (player["stars"] != null) segs.Add("Stars " + player["stars"]);
+            if (player["arrow_slots"] != null)
+                segs.Add($"Arrows {player["arrows_available"]}/{player["arrow_slots"]} ready"
+                    + ((player["arrows_away"]?.GetValue<double>() ?? 0) > 0 ? $", {player["arrows_away"]} Impaled in enemies (hit that enemy to Dislodge it back)" : ""));
+            if (player["melody_played_this_turn"] is JsonArray melody)
+                segs.Add("Melody this turn: " + (melody.Count == 0 ? "none" : string.Join("+", melody.Items().Select(m => m!.ToString()))));
             var powers = string.Join(", ", player["status"].Items().Select(PowerText).Where(s => s.Length > 0));
             if (powers.Length > 0) segs.Add(powers);
             lines.Add("[You] " + string.Join(" | ", segs));
@@ -424,6 +432,7 @@ internal static partial class GameState
         if (cost.Length > 0) meta.Add(cost);
         if (card.Text("type").Length > 0) meta.Add(card.Text("type"));
         if (detail && card.Text("rarity").Length > 0) meta.Add(card.Text("rarity"));
+        if (card["melody"] is JsonArray melody && melody.Count > 0) meta.Add(string.Join("+", melody.Items().Select(m => m!.ToString())));
         var head = CardName(card);
         if (meta.Count > 0) head += " (" + string.Join("/", meta) + ")";
         var parts = new List<string> { head, OneLine(card.Text("description")) };

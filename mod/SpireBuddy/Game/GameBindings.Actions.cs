@@ -362,7 +362,7 @@ internal static partial class GameBindings
 
         if (player.RunState.CurrentRoom is MerchantRoom merchantRoom)
         {
-            inventory = merchantRoom.GetLocalInventory();
+            inventory = RunManager.Instance.MerchantSynchronizer.GetLocalInventory();
         }
         else if (player.RunState.CurrentRoom is EventRoom eventRoom
                  && eventRoom.CanonicalEvent is FakeMerchant)
@@ -392,8 +392,9 @@ internal static partial class GameBindings
         if (!entry.EnoughGold)
             return Error($"Not enough gold (need {entry.Cost}, have {player.Gold})");
 
-        // Fire-and-forget purchase (same path as AutoSlay)
-        Track(entry.OnTryPurchaseWrapper(inventory));
+        // Fire-and-forget purchase through the same synchronized path as a
+        // native shop-slot click (NMerchantSlot.OnSelected).
+        Track(RunManager.Instance.MerchantSynchronizer.PurchaseLocalEntry(entry));
 
         return new Dictionary<string, object?>
         {

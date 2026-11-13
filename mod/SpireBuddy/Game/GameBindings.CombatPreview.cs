@@ -61,12 +61,12 @@ internal static partial class GameBindings
             // Other attacks still receive game-calculated target previews above.
             if (card.GetType().Assembly != typeof(CardModel).Assembly || card.Enchantment != null || card.Affliction != null
                 || card.GetEnchantedReplayCount() != 0 || card.EnergyCost.CostsX || card.HasStarCostX) return;
-            if (card is not (StrikeIronclad or StrikeSilent or StrikeDefect or StrikeRegent or StrikeNecrobinder
+            if (card is not (StrikeIronclad or StrikeSilent or StrikeDefect or StrikeRegent or StrikeNecrobinder or StrikeFool
                 or Bash or TwinStrike or Unrelenting or PerfectedStrike)) return;
             state["lethal_profile"] = new Dictionary<string, object?>
             {
                 ["base_damage"] = card is PerfectedStrike ? card.DynamicVars.CalculatedDamage.Calculate(null) : card.DynamicVars.Damage.BaseValue,
-                ["hits"] = card is TwinStrike ? 2 : 1,
+                ["hits"] = card is TwinStrike ? card.DynamicVars.HitCount.IntValue : 1,
                 ["energy_cost"] = card.EnergyCost.GetWithModifiers(CostModifiers.Local),
                 ["star_cost"] = Math.Max(0, card.GetStarCostWithModifiers()),
                 ["vulnerable"] = card is Bash ? card.DynamicVars.Vulnerable.IntValue : 0,

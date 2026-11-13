@@ -337,6 +337,16 @@ namespace SpireBuddy.Game;
             ["floor"] = runState.TotalFloor,
             ["ascension"] = runState.AscensionLevel
         };
+        // Dread and Blitz change what the ascension number means (Blitz maps
+        // its levels to different effects; Dread adds IsDread() bonuses).
+        if (runState.GameMode is not (GameMode.Standard or GameMode.None))
+        {
+            var run = (Dictionary<string, object?>)result["run"]!;
+            run["game_mode"] = runState.GameMode.ToString();
+            run["ascension_effects"] = Enum.GetValues<MegaCrit.Sts2.Core.Entities.Ascension.AscensionLevel>()
+                .Where(l => l != MegaCrit.Sts2.Core.Entities.Ascension.AscensionLevel.None && RunManager.Instance.HasAscension(l))
+                .Select(l => l.ToString()).ToList();
+        }
 
         if (TransitionInProgress()) result["loading"] = true;
 

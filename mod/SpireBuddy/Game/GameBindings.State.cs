@@ -123,6 +123,27 @@ internal static partial class GameBindings
                 state["stars"] = combatState.Stars;
             }
 
+            // Arrows (The Fool's Song Bow). A shot arrow stays Away while it
+            // impales an enemy and returns when retrieved; Destroyed is gone.
+            var arrows = combatState.Arrows;
+            if (arrows.Count > 0 || player.Character is MegaCrit.Sts2.Core.Models.Characters.Fool)
+            {
+                state["arrows_available"] = arrows.Count(a => a.IsAvailable);
+                state["arrow_slots"] = arrows.Count(a => a.Status != MegaCrit.Sts2.Core.Entities.FoolArrows.ArrowStatus.Destroyed);
+                state["arrows_away"] = arrows.Count(a => a.Status == MegaCrit.Sts2.Core.Entities.FoolArrows.ArrowStatus.Away);
+            }
+
+            // Melody (Wah/Cho/Ki tags played this turn), shown by the Fool's combat UI.
+            var melody = new List<string>();
+            try
+            {
+                foreach (var tag in new[] { CardTag.Wah, CardTag.Cho, CardTag.Ki })
+                    if (MegaCrit.Sts2.Core.Commands.MelodyCmd.PlayedThisTurn(player, tag)) melody.Add(tag.ToString());
+            }
+            catch { /* history unavailable between turns */ }
+            if (melody.Count > 0 || player.Character is MegaCrit.Sts2.Core.Models.Characters.Fool)
+                state["melody_played_this_turn"] = melody;
+
             // Hand
             var hand = new List<Dictionary<string, object?>>();
             int cardIndex = 0;
@@ -251,7 +272,7 @@ internal static partial class GameBindings
     /// </summary>
     private static Dictionary<string, object?> BuildCardInfo(CardModel card, PileType pile = PileType.None)
     {
-        return new Dictionary<string, object?>
+        var info = new Dictionary<string, object?>
         {
             ["id"] = card.Id.Entry,
             ["name"] = SafeGetText(() => card.Title),
@@ -263,6 +284,9 @@ internal static partial class GameBindings
             ["is_upgraded"] = card.IsUpgraded,
             ["keywords"] = BuildHoverTips(card.HoverTips)
         };
+        var melodyTags = new[] { CardTag.Wah, CardTag.Cho, CardTag.Ki }.Where(t => card.Tags.Contains(t)).Select(t => t.ToString()).ToList();
+        if (melodyTags.Count > 0) info["melody"] = melodyTags;
+        return info;
     }
 
     private static Dictionary<string, object?> BuildCardState(CardModel card, int index)
@@ -622,7 +646,7 @@ internal static partial class GameBindings
             state["can_proceed"] = IsControlVisibleOrActionable(ui?.ProceedButton);
             return state;
         }
-        var inventory = merchantRoom.GetLocalInventory();
+        var inventory = RunManager.Instance.MerchantSynchronizer.GetLocalInventory();
         if (inventory == null)
         {
             state["items"] = new List<Dictionary<string, object?>>();

@@ -22,6 +22,7 @@ if (args.Contains("--card-choices")) return;
 await RestSiteChecks.Run();
 await AdapterChecks.Run();
 BriefChecks.Run();
+FoolChecks.Run();
 CompactStateChecks.Run();
 await BriefChecks.Histories();
 await SessionChecks.Run();
