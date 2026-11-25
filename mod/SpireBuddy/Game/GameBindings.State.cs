@@ -7,6 +7,7 @@ using MegaCrit.Sts2.Core.Combat;
 using MegaCrit.Sts2.Core.Context;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.FoolArrows;
 using MegaCrit.Sts2.Core.HoverTips;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Entities.Potions;
@@ -123,14 +124,15 @@ internal static partial class GameBindings
                 state["stars"] = combatState.Stars;
             }
 
-            // Arrows (The Fool's Song Bow). A shot arrow stays Away while it
-            // impales an enemy and returns when retrieved; Destroyed is gone.
+            // Count ready and away arrows so older builds still exclude destroyed slots.
             var arrows = combatState.Arrows;
             if (arrows.Count > 0 || player.Character is MegaCrit.Sts2.Core.Models.Characters.Fool)
             {
-                state["arrows_available"] = arrows.Count(a => a.IsAvailable);
-                state["arrow_slots"] = arrows.Count(a => a.Status != MegaCrit.Sts2.Core.Entities.FoolArrows.ArrowStatus.Destroyed);
-                state["arrows_away"] = arrows.Count(a => a.Status == MegaCrit.Sts2.Core.Entities.FoolArrows.ArrowStatus.Away);
+                var available = arrows.Count(a => a.IsAvailable);
+                var away = arrows.Count(a => a.Status == ArrowStatus.Away);
+                state["arrows_available"] = available;
+                state["arrow_slots"] = available + away;
+                state["arrows_away"] = away;
             }
 
             // Melody (Wah/Cho/Ki tags played this turn), shown by the Fool's combat UI.

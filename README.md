@@ -10,7 +10,8 @@ Optional [Jev decisions](mod/README.md#jev-decisions) use TypeSafe's choice API 
 run strategy, combat, or both, with a separate endpoint, model and API key.
 Settings are grouped into sections that start collapsed.
 
-Version: **1.2.12**, for Slay the Spire 2 v0.113.0 with the Fool. Available on
+This checkout builds **Spire Buddy 1.2.13** for Slay the Spire 2 public beta
+v0.114.0. Spire Buddy is also available on
 [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3802091577).
 
 ## Install
